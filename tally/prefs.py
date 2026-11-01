@@ -27,6 +27,7 @@ DEFAULTS = {
     "finish_at": 85,
     "week_start": "monday",
     "hide_spoilers": False,
+    "play_with": "iina",
 }
 
 _CHOICES = {
@@ -36,6 +37,7 @@ _CHOICES = {
     "min_play_seconds": (20, 60, 120, 300),
     "finish_at": tuple(FINISH_RULES),
     "week_start": ("monday", "sunday"),
+    "play_with": ("iina", "default"),
 }
 
 

@@ -109,6 +109,19 @@ class Api:
                 "episode_name": nxt["name"], "airdate": nxt["airdate"], "guess": nxt["guess"],
                 "last_watched": w["last_seen_at"], "watch": last}
 
+    def _file_for(self, title_id: int, st: dict | None) -> str | None:
+        """The file to play to carry on: the one you stopped in, or the next episode if it's downloaded."""
+        from . import library
+
+        if not st:
+            return None
+        if st["state"] == "resume":
+            return library.existing(st["watch"]["path"]) or \
+                library.find_episode(self.db, title_id, st["season"], st["episode"])
+        if st["state"] == "next":
+            return library.find_episode(self.db, title_id, st["season"], st["episode"])
+        return None
+
     # ---- screens --------------------------------------------------------
 
     def home(self, now_playing: list[dict], week_start: float | None = None) -> dict:
@@ -131,16 +144,20 @@ class Api:
                                "GROUP BY t.id ORDER BY last DESC", (cutoff,)):
             if t["kind"] == "show":
                 st = self._show_state(t["id"])
-                if st and st["state"] in ("resume", "next", "upcoming"):
-                    cont.append({"title": title_dict(t), **st})
+                announced = st and st["state"] == "next" and not st.get("guess") and not st.get("airdate")
+                if st and st["state"] in ("resume", "next", "upcoming") and not announced:
+                    cont.append({"title": title_dict(t), **st, "file": self._file_for(t["id"], st)})
             else:
                 w = self.db.one(_WATCH_SQL + " WHERE w.title_id = ? ORDER BY w.last_seen_at DESC LIMIT 1", (t["id"],))
                 p = _progress(w) if w else None
                 if w and not w["completed"] and p is not None and 0.02 <= p < 0.9:
                     wd = watch_dict(w)
+                    from . import library
+
                     cont.append({"title": title_dict(t), "state": "resume", "progress": p,
                                  "position": wd["position"], "duration": wd["duration"],
-                                 "last_watched": w["last_seen_at"], "watch": wd})
+                                 "last_watched": w["last_seen_at"], "watch": wd,
+                                 "file": library.existing(w["path"])})
 
         # "Mark as watched" clicks aren't viewing, so they stay out of the weekly view
         week = [watch_dict(w) for w in self.db.query(
@@ -208,6 +225,10 @@ class Api:
                         and not any(e["airdate"] for e in later if e["season"] == later[0]["season"]):
                     found = item("announced", later[0])
             if found:
+                if found["kind"] in ("new_season", "new_episodes"):
+                    from . import library
+
+                    found["file"] = library.find_episode(self.db, t["id"], found["season"], found["episode"])
                 out.append(found)
         order = {"new_season": 0, "new_episodes": 0, "premiere": 1, "next_episode": 1, "announced": 2}
         out.sort(key=lambda i: (order[i["kind"]],
@@ -272,6 +293,13 @@ class Api:
             result["seasons"] = [{"season": s, "episodes": seasons[s]}
                                  for s in sorted(seasons, key=lambda s: (s <= 0, s))]
             result["current"] = self._show_state(title_id)
+            if result["current"]:
+                result["current"]["file"] = self._file_for(title_id, result["current"])
+        else:
+            from . import library
+
+            latest = history[0]["path"] if history else None
+            result["file"] = library.existing(latest) or library.find_episode(self.db, title_id, None, None)
         return result
 
     @staticmethod

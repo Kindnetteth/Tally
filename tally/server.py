@@ -10,6 +10,7 @@ import socket
 import socketserver
 import sys
 import threading
+import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,10 +19,12 @@ from pathlib import Path
 from . import __version__, iina_import, metadata, paths, service
 from . import prefs as user_prefs
 from .api import Api
+from .parser import normalize
 
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
+_similar_cache: dict[int, tuple[float, list]] = {}  # title id -> (when, recommendations)
 ASSETS_DIR = Path(__file__).parent / "assets"
 
 
@@ -131,6 +134,8 @@ def make_handler(app: App):
                 if m := re.fullmatch(r"/api/titles/(\d+)", path):
                     data = app.api.title(int(m.group(1)))
                     return self._json(data) if data else self._error(404, "not found")
+                if m := re.fullmatch(r"/api/titles/(\d+)/similar", path):
+                    return self._json(self._similar(int(m.group(1))))
                 if path == "/api/history":
                     return self._json(app.api.history(
                         q=q.get("q", [""])[0], limit=int(q.get("limit", ["100"])[0]),
@@ -162,6 +167,25 @@ def make_handler(app: App):
             if ctype.startswith("text/") or ctype.endswith("javascript"):
                 ctype += "; charset=utf-8"
             self._send(200, target.read_bytes(), ctype, {"Cache-Control": "no-cache"})
+
+        def _similar(self, title_id: int) -> dict:
+            key = app.db.get_setting("tmdb_key")
+            if not key:
+                return {"needs_key": True, "items": []}
+            cached = _similar_cache.get(title_id)
+            if cached and time.time() - cached[0] < 86400:
+                return {"items": cached[1]}
+            t = app.db.one("SELECT kind, name, year, imdb_id, source, source_id FROM titles WHERE id = ?", (title_id,))
+            if t is None:
+                return {"items": []}
+            items = metadata.tmdb_recommendations(t["kind"], t["name"], t["year"], t["imdb_id"], t["source"],
+                                                  t["source_id"], key)
+            # Point at your own page for anything you've already watched
+            mine = {(normalize(r["name"]), r["kind"]): r["id"] for r in app.db.query("SELECT id, name, kind FROM titles")}
+            for it in items:
+                it["title_id"] = mine.get((normalize(it["name"] or ""), it["kind"]))
+            _similar_cache[title_id] = (time.time(), items)
+            return {"items": items}
 
         def _poster(self, title_id: int):
             row = app.db.one("SELECT poster, poster_type FROM titles WHERE id = ?", (title_id,))
@@ -254,6 +278,11 @@ def make_handler(app: App):
                     self._json({"ok": True})
                     app.request_quit()
                     return None
+                if path == "/api/play":
+                    from . import library
+
+                    library.play(str(body.get("path") or ""), user_prefs.load(app.db)["play_with"])
+                    return self._json({"ok": True})
                 if path == "/api/show":
                     app.request_show()
                     return self._json({"ok": True})

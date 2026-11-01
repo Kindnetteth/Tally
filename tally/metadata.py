@@ -213,6 +213,36 @@ def tmdb_details(source_id: str, key: str) -> Candidate:
     )
 
 
+def tmdb_recommendations(kind: str, name: str, year: int | None, imdb_id: str | None, source: str | None,
+                         source_id: str | None, key: str, limit: int = 12) -> list[dict]:
+    """Titles like this one, from TMDB's recommendations (falling back to its "similar" list)."""
+    media = "tv" if kind == "show" else "movie"
+    tmdb_id = source_id if source == "tmdb" else None
+    if not tmdb_id and imdb_id:
+        found = _tmdb(f"/find/{imdb_id}", key, {"external_source": "imdb_id"})
+        hits = found.get(f"{media}_results") or []
+        tmdb_id = hits[0]["id"] if hits else None
+    if not tmdb_id:
+        params = {"query": name}
+        if year:
+            params["first_air_date_year" if media == "tv" else "year"] = year
+        hits = _tmdb(f"/search/{media}", key, params).get("results") or []
+        tmdb_id = hits[0]["id"] if hits else None
+    if not tmdb_id:
+        return []
+    results = _tmdb(f"/{media}/{tmdb_id}/recommendations", key).get("results") or []
+    if not results:
+        results = _tmdb(f"/{media}/{tmdb_id}/similar", key).get("results") or []
+    out = []
+    for r in results[:limit]:
+        date = r.get("first_air_date") or r.get("release_date") or ""
+        out.append({"name": r.get("name") or r.get("title"), "year": int(date[:4]) if date[:4].isdigit() else None,
+                    "kind": "show" if media == "tv" else "movie", "overview": r.get("overview"),
+                    "poster": "https://image.tmdb.org/t/p/w342" + r["poster_path"] if r.get("poster_path") else None,
+                    "url": f"https://www.themoviedb.org/{media}/{r['id']}"})
+    return out
+
+
 def tmdb_key_works(key: str) -> bool:
     try:
         _tmdb("/configuration", key)

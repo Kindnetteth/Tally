@@ -322,6 +322,19 @@ function weekStart() {
   return d.getTime() / 1000;
 }
 
+const ICON_PLAY = '<path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/>';
+
+async function playFile(path, label) {
+  try { await api("/api/play", { path }); toast(`Playing ${label}`); }
+  catch (err) { toast(err.message); }
+}
+
+// Round play button over a poster; clicking it plays instead of opening the title
+function posterPlay(path, label) {
+  return h("button", { class: "poster-play", type: "button", title: `Play ${label}`, "aria-label": `Play ${label}`,
+    onclick: (e) => { e.preventDefault(); e.stopPropagation(); playFile(path, label); } }, svg(ICON_PLAY, "icon"));
+}
+
 function untilLabel(date) {
   const days = Math.round((new Date(date + "T12:00:00") - startOfDay(new Date())) / 86400000 - 0.5);
   if (days <= 0) return "today";
@@ -349,8 +362,9 @@ function updateCard(item) {
   };
   const [badge, line, sub] = kinds[item.kind];
   const out = item.kind === "new_season" || item.kind === "new_episodes";
+  const label = `${t.name} ${epCode(item.season, item.episode)}`;
   return h("a", { class: "card", href: `#/title/${t.id}` },
-    poster(t, [h("span", { class: "badge" + (out ? " fresh" : "") }, badge)]),
+    poster(t, [h("span", { class: "badge" + (out ? " fresh" : "") }, badge), item.file ? posterPlay(item.file, label) : null]),
     h("div", { class: "card-title" }, t.name),
     h("div", { class: "card-sub" + (out ? " accent" : ""), title: item.episode_name || "" }, line),
     h("div", { class: "card-sub faint" }, sub));
@@ -371,8 +385,9 @@ function continueCard(item) {
     cls += " accent";
     badge = h("span", { class: "badge" }, "Next");
   }
+  const label = t.kind === "show" ? `${t.name} ${epCode(item.season, item.episode)}` : t.name;
   return h("a", { class: "card", href: `#/title/${t.id}` },
-    poster(t, [badge, prog]),
+    poster(t, [badge, prog, item.file ? posterPlay(item.file, label) : null]),
     h("div", { class: "card-title" }, t.name),
     h("div", { class: cls, title: item.episode_name || "" }, sub));
 }
@@ -504,11 +519,17 @@ async function renderTitle(id) {
       await api(`/api/titles/${t.id}/delete`, {}); location.hash = t.kind === "show" ? "#/shows" : "#/movies";
     } }]));
 
-  const parts = [h("div", { class: "hero" }, poster(t), h("div", {},
+  const back = h("button", { class: "back", type: "button", onclick: () => {
+    if (history.length > 1) history.back();
+    else location.hash = t.kind === "show" ? "#/shows" : "#/movies";
+  } }, svg('<path d="M15 18l-6-6 6-6"/>', "icon"), "Back");
+  const parts = [back, h("div", { class: "hero" }, poster(t), h("div", {},
     h("h1", {}, t.name),
     h("div", { class: "hero-meta" }, metaBits, links),
     t.overview ? h("p", { class: "overview" }, t.overview) : h("p", { class: "muted" }, t.matched ? "No description available." : "Tally couldn't find this title automatically. Use Find match to pick it."),
-    data.current ? currentCallout(data.current) : null,
+    data.current ? currentCallout(data.current, t) : null,
+    t.kind === "movie" && data.file ? h("div", { class: "btn-row", style: { margin: "16px 0" } },
+      h("button", { class: "btn primary", type: "button", onclick: () => playFile(data.file, t.name) }, svg(ICON_PLAY, "icon"), "Play")) : null,
     actions))];
 
   if (t.kind === "show" && data.seasons && data.seasons.length) {
@@ -533,21 +554,52 @@ async function renderTitle(id) {
     parts.push(h("section", { class: "section" }, h("div", { class: "section-head" }, h("h2", {}, "Episodes")), h("div", { style: { marginBottom: "12px" } }, seg), list));
   }
 
+  parts.push(moreLikeThis(t));
   parts.push(h("section", { class: "section" },
     h("div", { class: "section-head" }, h("h2", {}, "History"), h("span", { class: "muted small" }, `${data.history.length} ${data.history.length === 1 ? "entry" : "entries"}`)),
     data.history.length ? dayGroups(data.history, reload) : empty("No history", "")));
   return parts;
 }
 
-function currentCallout(c) {
+// Recommendations from TMDB; filled in after the page shows so it never waits on them
+const similarCache = {};
+function moreLikeThis(t) {
+  const section = h("section", { class: "section" });
+  const draw = (res) => {
+    if (res.needs_key) {
+      section.replaceChildren(h("div", { class: "section-head" }, h("h2", {}, "More like this")),
+        h("p", { class: "muted small" }, "Add a free TMDB key in ", h("a", { class: "link", href: "#/settings" }, "Settings"), " to see shows and movies like this one."));
+    } else if (res.items && res.items.length) {
+      section.replaceChildren(h("div", { class: "section-head" }, h("h2", {}, "More like this")),
+        h("div", { class: "rail" }, res.items.map((it) => {
+          const art = it.poster
+            ? h("div", { class: "poster" }, h("img", { src: it.poster, alt: "", loading: "lazy" }), it.title_id ? h("span", { class: "badge done" }, "Watched") : null)
+            : poster({ name: it.name });
+          const attrs = it.title_id ? { href: `#/title/${it.title_id}` } : { href: it.url, target: "_blank", rel: "noopener" };
+          return h("a", { class: "card", title: it.overview || "", ...attrs }, art,
+            h("div", { class: "card-title" }, it.name), h("div", { class: "card-sub" }, [it.year, it.kind === "show" ? "TV show" : "Movie"].filter(Boolean).join(" · ")));
+        })));
+    } else {
+      section.replaceChildren();
+    }
+  };
+  if (similarCache[t.id]) draw(similarCache[t.id]);
+  else api(`/api/titles/${t.id}/similar`).then((res) => { similarCache[t.id] = res; draw(res); }).catch(() => section.replaceChildren());
+  return section;
+}
+
+function currentCallout(c, t) {
   let big, sub = c.episode_name || "";
   if (c.state === "resume") big = `Partway through ${epCode(c.season, c.episode)}`;
   else if (c.state === "next") big = `Up next: ${epCode(c.season, c.episode)}`;
   else if (c.state === "upcoming") { big = `Next: ${epCode(c.season, c.episode)}`; sub = `${sub ? sub + " · " : ""}airs ${airLabel(c.airdate)}`; }
   else { big = "You're caught up"; sub = `Last watched ${epCode(c.season, c.episode)}`; }
+  const play = c.file ? h("button", { class: "btn primary", type: "button", onclick: () => playFile(c.file, `${t.name} ${epCode(c.season, c.episode)}`) },
+    svg(ICON_PLAY, "icon"), c.state === "resume" ? "Resume" : `Play ${epCode(c.season, c.episode)}`) : null;
   return h("div", { class: "callout" },
     h("div", {}, h("div", { class: "big" }, big), h("div", { class: "muted small" }, sub || " ")),
     c.state === "resume" && c.watch ? h("div", { class: "muted small", style: { marginLeft: "auto" } }, progressText(c.watch)) : null,
+    play,
     c.state === "resume" ? bar(c.progress) : null);
 }
 
@@ -709,6 +761,8 @@ function displayPanel() {
   return h("div", { class: "panel" }, h("h2", {}, "Display"),
     settingRow("Week starts on", "For This week on the home page.",
       seg([["monday", "Monday"], ["sunday", "Sunday"]], PREFS.week_start, async (v) => { await savePrefs({ week_start: v }); route({ quiet: true }); })),
+    settingRow("Play with", "Which app the Play buttons open episodes and movies in.",
+      seg([["iina", "IINA"], ["default", "Default player"]], PREFS.play_with || "iina", async (v) => { await savePrefs({ play_with: v }); route({ quiet: true }); })),
     settingRow("Hide spoilers", "Blur the names of episodes you haven't watched yet. Hover to reveal.",
       toggle(PREFS.hide_spoilers, (v) => savePrefs({ hide_spoilers: v }), "Hide spoilers")));
 }
