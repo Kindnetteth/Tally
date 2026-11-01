@@ -1,0 +1,98 @@
+# Builds Tally and attaches it to a GitHub release.
+#
+# Publish a release (tag like v1.1.0) and this builds the app with that
+# version and uploads Tally.dmg to the release. Run it by hand from the
+# Actions tab to get a test build without releasing.
+#
+# Windows is built only when the repository variable BUILD_WINDOWS is "true"
+# (Settings > Secrets and variables > Actions > Variables).
+
+name: Build and release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to upload files to the release
+
+jobs:
+  mac:
+    name: Mac (Apple Silicon)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set the version from the release tag
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: python packaging/set_version.py "${TAG#v}"
+
+      - name: Install
+        run: python -m pip install -e ".[app,build]"
+
+      - name: Test
+        run: python -m unittest discover -s tests -t .
+
+      - name: Build
+        run: python packaging/build.py
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/Tally.dmg --clobber
+
+      - name: Keep the test build
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tally-mac
+          path: dist/Tally.dmg
+
+  windows:
+    name: Windows
+    if: vars.BUILD_WINDOWS == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set the version from the release tag
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: python packaging/set_version.py "${TAG#v}"
+
+      - name: Install
+        run: python -m pip install -e ".[app,build]"
+
+      - name: Build
+        run: python packaging/build.py
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/Tally-windows.zip --clobber
+
+      - name: Keep the test build
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tally-windows
+          path: dist/Tally-windows.zip

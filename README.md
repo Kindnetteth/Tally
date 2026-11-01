@@ -39,6 +39,10 @@ python3 -m venv .venv
 
 This makes `dist/Tally.app` and `dist/Tally.dmg` on a Mac, or `dist/Tally.exe` on Windows (use `.venv\Scripts\python` there). Build on the system you're building for. `packaging/make_icons.py` redraws the icons.
 
+### Releasing
+
+Publish a release on GitHub with a tag like `v1.1.0`. GitHub Actions builds the Mac app with that version and attaches `Tally.dmg` to the release in about 10 minutes (`.github/workflows/release.yml`). To get a test build without releasing, run **Build and release** by hand from the Actions tab. Windows builds turn on when the repository variable `BUILD_WINDOWS` is `true`.
+
 ### Without the app
 
 Tally also runs as a plain Python program with only the standard library. `python3 -m tally install` starts it in the background and you browse at <http://127.0.0.1:8737/>. See [Commands](#commands).
