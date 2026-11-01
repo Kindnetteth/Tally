@@ -19,7 +19,7 @@ app = [
     "Pillow; sys_platform == 'win32'",
     "psutil; sys_platform == 'win32'",
 ]
-build = ["pyinstaller>=6", "Pillow"]
+build = ["pyinstaller>=6", "Pillow", "dmgbuild; sys_platform == 'darwin'"]
 
 [project.scripts]
 tally = "tally.__main__:main"

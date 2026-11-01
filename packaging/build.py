@@ -38,7 +38,9 @@ def pyinstaller(*args: str) -> None:
 
 
 def build_mac() -> None:
-    pyinstaller("--icon", str(ROOT / "packaging" / "Tally.icns"), "--osx-bundle-identifier", "com.tally.app")
+    # Apple Silicon only; Pillow is only needed for the Windows tray
+    pyinstaller("--icon", str(ROOT / "packaging" / "Tally.icns"), "--osx-bundle-identifier", "com.tally.app",
+                "--target-arch", "arm64", "--exclude-module", "PIL")
     app = DIST / "Tally.app"
     info_path = app / "Contents" / "Info.plist"
     info = plistlib.loads(info_path.read_bytes())
@@ -66,12 +68,32 @@ def build_mac() -> None:
         subprocess.run(["ditto", "--norsrc", "--noextattr", "--noqtn", str(app), str(signed)], check=True)
         subprocess.run(["xattr", "-cr", str(signed)], check=True)
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(signed)], check=True)
-        (stage / "Applications").symlink_to("/Applications")
-        subprocess.run(["hdiutil", "create", "-volname", "Tally", "-srcfolder", str(stage), "-ov",
-                        "-format", "UDZO", str(dmg)], check=True, capture_output=True)
+        build_dmg(signed, dmg)
         shutil.rmtree(app)
         subprocess.run(["ditto", "--norsrc", "--noextattr", str(signed), str(app)], check=True)
     print(f"\nBuilt {app}\n      {dmg}")
+
+
+def build_dmg(app: Path, dmg: Path) -> None:
+    """The installer: a window with Tally on the left and Applications on the right."""
+    import dmgbuild
+
+    background = ROOT / "packaging" / "dmg-background.tiff"
+    if not background.exists():
+        subprocess.run([sys.executable, str(ROOT / "packaging" / "make_dmg_background.py")], check=True)
+    dmgbuild.build_dmg(str(dmg), "Tally", settings={
+        "files": [str(app)],
+        "symlinks": {"Applications": "/Applications"},
+        "icon": str(ROOT / "packaging" / "Tally.icns"),
+        "background": str(background),
+        "window_rect": ((200, 140), (640, 400)),  # matches make_dmg_background.py
+        "icon_size": 112,
+        "text_size": 13,
+        "icon_locations": {"Tally.app": (170, 190), "Applications": (470, 190)},
+        "show_status_bar": False, "show_tab_view": False, "show_toolbar": False,
+        "show_pathbar": False, "show_sidebar": False,
+        "format": "UDZO",
+    })
 
 
 def build_windows() -> None:

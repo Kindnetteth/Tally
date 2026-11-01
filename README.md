@@ -13,7 +13,7 @@ A small app that runs quietly on your Mac or Windows PC and keeps a log of every
 
 ## Install
 
-**Mac:** open `Tally.dmg` and drag Tally into Applications, then open it.
+**Mac (Apple Silicon):** download `Tally.dmg` from Releases, open it and drag Tally into Applications, then open it.
 **Windows:** unzip `Tally-windows.zip` and run `Tally.exe`.
 
 Tally opens a window with your history and puts an icon in the menu bar (Mac) or system tray (Windows). Closing the window doesn't stop Tally. It keeps logging in the background, and the icon's menu shows what's playing. Choose **Quit Tally** from that menu to stop it.
@@ -25,7 +25,7 @@ The first time it opens, Tally:
 1. **Sets up your players** so they report your exact position (see below).
 2. **Adds itself to login items**, so it's always logging. Turn this off from the icon's menu or in Settings.
 
-The app isn't notarized by Apple yet, so the first time, macOS may say it can't verify the developer: right-click Tally in Applications, choose **Open**, then **Open** again. On Windows, SmartScreen may ask you to confirm with **More info → Run anyway**.
+The app isn't notarized by Apple yet, so the first time you open it macOS says it can't verify the developer. Click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Tally. You only do this once. On Windows, SmartScreen may ask you to confirm with **More info → Run anyway**.
 
 If you used the older command-line install (`python3 -m tally install`), the app replaces it the first time it opens. Your history is kept.
 
