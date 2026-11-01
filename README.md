@@ -13,23 +13,35 @@ A small app that runs quietly on your Mac or Windows PC and keeps a log of every
 
 ## Install
 
-You need Python 3.9 or newer. macOS includes it, or you can get it from python.org. On Windows, install it from python.org. Tally uses only the standard library, so there's nothing else to install.
+**Mac:** open `Tally.dmg` and drag Tally into Applications, then open it.
+**Windows:** unzip `Tally-windows.zip` and run `Tally.exe`.
 
-From this folder:
+Tally opens a window with your history and puts an icon in the menu bar (Mac) or system tray (Windows). Closing the window doesn't stop Tally. It keeps logging in the background, and the icon's menu shows what's playing. Choose **Quit Tally** from that menu to stop it.
 
-```bash
-python3 -m tally install
-```
+Tally is built to be light on battery. The part that runs all the time is a small logger behind the menu bar icon: about 0.2 seconds of CPU a minute and around 100 MB of memory. The window is a separate process that starts when you open Tally and exits completely when you close it.
 
-On Windows, use `py -m tally install`.
-
-`install` does three things:
+The first time it opens, Tally:
 
 1. **Sets up your players** so they report your exact position (see below).
-2. **Starts Tally in the background**, now and every time you log in: a LaunchAgent on macOS, a hidden Startup item on Windows.
-3. **Opens your history** at <http://127.0.0.1:8737/>.
+2. **Adds itself to login items**, so it's always logging. Turn this off from the icon's menu or in Settings.
 
-Bookmark that page. Tally has no window or dock icon; it just runs.
+The app isn't notarized by Apple yet, so the first time, macOS may say it can't verify the developer: right-click Tally in Applications, choose **Open**, then **Open** again. On Windows, SmartScreen may ask you to confirm with **More info → Run anyway**.
+
+If you used the older command-line install (`python3 -m tally install`), the app replaces it the first time it opens. Your history is kept.
+
+### Building the app
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[app,build]"
+.venv/bin/python packaging/build.py
+```
+
+This makes `dist/Tally.app` and `dist/Tally.dmg` on a Mac, or `dist/Tally.exe` on Windows (use `.venv\Scripts\python` there). Build on the system you're building for. `packaging/make_icons.py` redraws the icons.
+
+### Without the app
+
+Tally also runs as a plain Python program with only the standard library. `python3 -m tally install` starts it in the background and you browse at <http://127.0.0.1:8737/>. See [Commands](#commands).
 
 ## How each player is hooked up
 
@@ -43,23 +55,30 @@ Bookmark that page. Tally has no window or dock icon; it just runs.
 
 The fallback in the last row also covers IINA and VLC before you've restarted them. On Windows, `pip install psutil` lets the fallback see full file paths. Without it, the fallback reads file names from window titles.
 
-Settings (gear icon) shows which players Tally is connected to right now.
+Settings (gear icon) shows which players Tally is connected to right now. **Set up players** there runs the setup again, for example after you install a new player.
 
 To undo the player changes, run `python3 -m tally setup --undo`.
 
 ## Using it
 
-- **Home:** what's playing now, this week's totals, *Continue watching* (partly watched episodes and movies, plus your next episode), and everything you watched this week by day.
+- **Home:** what's playing now, this week's totals, *Continue watching* (partly watched episodes and movies, plus your next episode), *New & upcoming* (new seasons and episodes of shows you've watched, premieres coming up, and seasons that are announced), and everything you watched this week by day. Episode lists of shows that are still airing are checked once a day.
 - **Shows:** every show with your current episode and progress (`29/94`).
 - **Show page:** the full episode list, organized by season. Tick episodes to mark them watched, or use **⋯ → Mark all up to here** to catch up on episodes you watched elsewhere.
 - **Fix match:** if a file was matched to the wrong show or movie, open it and choose **Fix match**. Every logged file moves to the title you pick.
 - **History:** search across titles, episode names and file names. You can remove entries or mark them finished.
 
-An episode or movie counts as **finished** once you reach 90% of it, or the last 2 minutes of anything longer than 10 minutes. If you reopen the same file within an hour, Tally continues the same entry. Files open for less than 20 seconds aren't logged.
+An episode or movie counts as **finished** once you reach 85% of it, or the last 4 minutes (the end credits) of anything longer than 10 minutes. You can change this in Settings. If you reopen the same file within an hour, Tally continues the same entry. Files open for less than 20 seconds aren't logged.
+
+## Settings
+
+- **Appearance:** Automatic, Light, Dark, Midnight (true black) or Glow themes; six colour schemes (Orchid, Violet, Ocean, Mint, Sunset, Graphite); and the app icon shown in the Dock, which can match your colour or be picked separately.
+- **Logging:** pause logging (also in the menu bar), open at login, only log shows and movies (skips music, phone videos, recordings and your own edits), ignore quick peeks, when something counts as finished, and folders to never log.
+- **Display:** the day your week starts, and hiding the names of episodes you haven't watched yet.
 
 ## Commands
 
 ```text
+python3 -m tally app          open the desktop app from source (window + menu bar icon)
 python3 -m tally install      set up players, start now and at login, open the page
 python3 -m tally status       what Tally sees right now (players, what's playing)
 python3 -m tally open         open the page
@@ -102,3 +121,8 @@ The background service runs from a copy in `~/Library/Application Support/Tally/
 | `tally/api.py`, `tally/server.py` | JSON API and the local web server |
 | `tally/web/` | The browse page (plain HTML, CSS and JS) |
 | `tally/service.py`, `tally/setup_players.py` | Start at login, player configuration |
+| `tally/engine.py` | Runs the tracker and web server (shared by the app and `tally run`) |
+| `tally/desktop.py` | The desktop app: window, menu bar / tray icon, login item |
+| `tally/prefs.py` | Your settings and the rules that use them |
+| `tally/iina_import.py` | Brings in IINA's playback history |
+| `packaging/` | Icons and the PyInstaller build script |

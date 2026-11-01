@@ -79,17 +79,18 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-COMPLETE_RATIO = 0.90
-COMPLETE_REMAINING_SECONDS = 120
+COMPLETE_RATIO = 0.85
+COMPLETE_REMAINING_SECONDS = 240  # end credits often run 2-4 minutes
 
 
-def is_complete(position: float | None, duration: float | None) -> bool:
+def is_complete(position: float | None, duration: float | None, ratio: float = COMPLETE_RATIO,
+                remaining: float = COMPLETE_REMAINING_SECONDS) -> bool:
     if not position or not duration or duration <= 0:
         return False
-    if position / duration >= COMPLETE_RATIO:
+    if position / duration >= ratio:
         return True
-    # Long videos with credits: within the last two minutes counts as finished
-    return duration > 600 and duration - position <= COMPLETE_REMAINING_SECONDS
+    # Long videos with credits: reaching the credits counts as finished
+    return duration > 600 and duration - position <= remaining
 
 
 class Database:
@@ -125,6 +126,14 @@ class Database:
             cur = conn.execute(sql, args)
             conn.commit()
             return cur
+
+    def recheck_completed(self, ratio: float = COMPLETE_RATIO, remaining: float = COMPLETE_REMAINING_SECONDS) -> int:
+        """Mark entries finished that reach the current rule. Never un-finishes anything."""
+        cur = self.execute(
+            "UPDATE watches SET completed = 1 WHERE completed = 0 AND duration > 0 AND max_position > 0 "
+            "AND (max_position / duration >= ? OR (duration > 600 AND duration - max_position <= ?))",
+            (ratio, remaining))
+        return cur.rowcount
 
     # ---- settings -------------------------------------------------------
 

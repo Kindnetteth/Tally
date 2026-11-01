@@ -288,12 +288,72 @@ function fixMatch(title, done) {
 const view = () => document.getElementById("view");
 let refreshTimer = null;
 let currentRender = null;
+let refreshEvery = 30000; // live pages; 5s while something is playing
+
+// Settings from /api/prefs; the defaults here only matter until it answers
+let PREFS = { theme: "system", accent: "orchid", app_icon: "match", paused: false, week_start: "monday", hide_spoilers: false };
+
+function applyLook(p) {
+  const root = document.documentElement;
+  if (p.theme && p.theme !== "system") root.dataset.theme = p.theme; else delete root.dataset.theme;
+  root.dataset.accent = p.accent || "orchid";
+  try { localStorage.setItem("tally-look", JSON.stringify({ theme: p.theme, accent: p.accent })); } catch (e) { /* private window */ }
+}
+
+async function loadPrefs() {
+  try { PREFS = await api("/api/prefs"); applyLook(PREFS); } catch (e) { /* keep what we have */ }
+  return PREFS;
+}
+
+async function savePrefs(changes) {
+  const res = await api("/api/settings", changes);
+  if (res.prefs) { PREFS = res.prefs; applyLook(PREFS); }
+  // Inside the app window, the Dock icon is the window's to change
+  if (("app_icon" in changes || "accent" in changes) && window.pywebview && window.pywebview.api) {
+    window.pywebview.api.set_icon(PREFS.app_icon === "match" ? PREFS.accent : PREFS.app_icon);
+  }
+  return PREFS;
+}
 
 function weekStart() {
   const d = startOfDay(new Date());
-  const day = (d.getDay() + 6) % 7; // Monday = 0
+  const day = PREFS.week_start === "sunday" ? d.getDay() : (d.getDay() + 6) % 7;
   d.setDate(d.getDate() - day);
   return d.getTime() / 1000;
+}
+
+function untilLabel(date) {
+  const days = Math.round((new Date(date + "T12:00:00") - startOfDay(new Date())) / 86400000 - 0.5);
+  if (days <= 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days < 14) return `in ${days} days`;
+  if (days < 60) return `in ${Math.round(days / 7)} weeks`;
+  return `in ${Math.round(days / 30)} months`;
+}
+
+function shortDate(date) {
+  const d = new Date(date + "T12:00:00");
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+}
+
+function updateCard(item) {
+  const t = item.title;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const kinds = {
+    new_season: ["New season", `Season ${item.season} is out`, plural(item.count, "episode") + (item.count < item.season_size ? ` of ${item.season_size} so far` : "")],
+    new_episodes: ["New", plural(item.count, "new episode"), `From ${epCode(item.season, item.episode)}`],
+    premiere: ["Soon", `Season ${item.season} · ${item.airdate ? shortDate(item.airdate) : ""}`, item.airdate ? `Premieres ${untilLabel(item.airdate)}` : ""],
+    next_episode: ["Soon", `${epCode(item.season, item.episode)} · ${item.airdate ? shortDate(item.airdate) : ""}`, item.airdate ? `Airs ${untilLabel(item.airdate)}` : ""],
+    announced: ["Announced", `Season ${item.season} announced`, "No release date yet"],
+  };
+  const [badge, line, sub] = kinds[item.kind];
+  const out = item.kind === "new_season" || item.kind === "new_episodes";
+  return h("a", { class: "card", href: `#/title/${t.id}` },
+    poster(t, [h("span", { class: "badge" + (out ? " fresh" : "") }, badge)]),
+    h("div", { class: "card-title" }, t.name),
+    h("div", { class: "card-sub" + (out ? " accent" : ""), title: item.episode_name || "" }, line),
+    h("div", { class: "card-sub faint" }, sub));
 }
 
 function continueCard(item) {
@@ -333,10 +393,16 @@ function nowPlaying(items) {
 }
 
 async function renderHome() {
-  const data = await api(`/api/home?week_start=${weekStart()}`);
+  await loadPrefs();
+  const [data, updates] = await Promise.all([api(`/api/home?week_start=${weekStart()}`), api("/api/updates").catch(() => [])]);
+  refreshEvery = data.now_playing.length ? 5000 : 30000;
   const s = data.stats;
   const reload = () => route();
   const parts = [];
+  if (PREFS.paused) {
+    parts.push(h("div", { class: "paused-banner" }, "Logging is paused. Nothing you play is being recorded.",
+      h("button", { class: "btn primary", type: "button", onclick: async () => { await savePrefs({ paused: false }); toast("Logging again"); reload(); } }, "Resume")));
+  }
   if (data.now_playing.length) parts.push(h("section", { class: "section" }, nowPlaying(data.now_playing)));
   parts.push(h("section", { class: "section" },
     h("div", { class: "section-head" }, h("h1", {}, "This week")),
@@ -350,6 +416,11 @@ async function renderHome() {
     data.continue.length
       ? h("div", { class: "rail" }, data.continue.map(continueCard))
       : empty("Nothing in progress", "Open a video in IINA, VLC, mpv or your usual player and it will show up here.")));
+  if (updates.length) {
+    parts.push(h("section", { class: "section" },
+      h("div", { class: "section-head" }, h("h2", {}, "New & upcoming"), h("span", { class: "muted small" }, "From shows you've watched")),
+      h("div", { class: "rail" }, updates.map(updateCard))));
+  }
   parts.push(h("section", { class: "section" },
     h("div", { class: "section-head" }, h("h2", {}, "Watched this week"), h("a", { class: "link small", href: "#/history" }, "Full history")),
     data.week.length ? dayGroups(data.week, reload) : empty("Nothing yet this week", "Everything you play is logged automatically.")));
@@ -500,7 +571,8 @@ function episodeRow(t, e, cur, reload) {
   return h("div", { class: "ep" + (isCurrent ? " current" : "") },
     h("div", { class: "ep-num" }, e.episode),
     h("div", { class: "row-main" },
-      h("div", { class: "row-title" + (future ? " faint" : "") }, e.name || `Episode ${e.episode}`, isCurrent ? h("span", { class: "pill accent", style: { marginLeft: "8px" } }, cur.state === "resume" ? "Watching" : "Next") : null),
+      h("div", { class: "row-title" + (future ? " faint" : "") },
+        h("span", { class: PREFS.hide_spoilers && e.name && !e.watched ? "spoiler" : null, title: PREFS.hide_spoilers && !e.watched ? "Hover to reveal" : null }, e.name || `Episode ${e.episode}`), isCurrent ? h("span", { class: "pill accent", style: { marginLeft: "8px" } }, cur.state === "resume" ? "Watching" : "Next") : null),
       h("div", { class: "row-sub" }, sub || " ")),
     partial ? h("span", { class: "muted small" }, `${Math.round(e.progress * 100)}%`) : null,
     check,
@@ -534,27 +606,144 @@ async function renderHistory() {
 }
 
 const SOURCE_HELP = {
-  mpv: "Reads exact position from IINA and mpv. `python3 -m tally setup` turns this on; reopen IINA once afterwards.",
-  vlc: "Uses VLC's web interface on this computer only. `python3 -m tally setup` turns it on; restart VLC afterwards.",
-  mpc: "Uses MPC-HC/MPC-BE's local web interface (port 13579), turned on by `tally setup`.",
+  mpv: "Reads exact position from IINA and mpv. Set up players turns this on; reopen IINA once afterwards.",
+  vlc: "Uses VLC's web interface on this computer only. Set up players turns it on; restart VLC afterwards.",
+  mpc: "Uses MPC-HC/MPC-BE's local web interface (port 13579). Set up players turns it on; restart the player afterwards.",
   openfiles: "Notices video files open in other players (QuickTime, Infuse, PotPlayer, Movies & TV…). Progress is estimated from time spent.",
 };
 
+const THEMES = [
+  ["system", "Automatic", ["#f6f6f8", "#1b1b21"]],
+  ["light", "Light", ["#f6f6f8", "#ffffff"]],
+  ["dark", "Dark", ["#111115", "#1b1b21"]],
+  ["midnight", "Midnight", ["#000000", "#0c0c0f"]],
+  ["glow", "Glow", ["#0e0e13", "#18181f"]],
+];
+const ACCENTS = [
+  ["orchid", "Orchid", "#ff5fa2", "#8b5cf6"], ["violet", "Violet", "#b06bff", "#4f6bff"],
+  ["ocean", "Ocean", "#38bdf8", "#2563eb"], ["mint", "Mint", "#34d399", "#0ea5a4"],
+  ["sunset", "Sunset", "#ffb347", "#ff4f6d"], ["graphite", "Graphite", "#a1a1ad", "#52525e"],
+];
+
+function settingRow(title, sub, control) {
+  return h("div", { class: "setting" },
+    h("div", { class: "setting-text" }, h("div", { class: "row-title" }, title), sub ? h("div", { class: "row-sub" }, sub) : null),
+    control);
+}
+
+function toggle(checked, onchange, label) {
+  const input = h("input", { type: "checkbox", role: "switch", checked, "aria-label": label, onchange: async () => {
+    try { await onchange(input.checked); } catch (err) { toast(err.message); input.checked = !input.checked; }
+  } });
+  return h("label", { class: "switch" }, input, h("span"));
+}
+
+function choice(options, value, onchange, label) {
+  const sel = h("select", { class: "input", "aria-label": label, onchange: async () => {
+    try { await onchange(isNaN(+sel.value) ? sel.value : +sel.value); } catch (err) { toast(err.message); }
+  } }, options.map(([v, text]) => h("option", { value: v, selected: v === value }, text)));
+  return sel;
+}
+
+function appearancePanel(st) {
+  const redraw = () => route({ quiet: true });
+  const themes = h("div", { class: "themes" }, THEMES.map(([id, label, [bg, surface]]) => {
+    const a = ACCENTS.find((x) => x[0] === PREFS.accent) || ACCENTS[0];
+    const preview = id === "system"
+      ? { background: `linear-gradient(135deg, ${bg} 50%, ${surface} 50%)` }
+      : id === "glow" ? { background: `radial-gradient(120% 90% at 20% 0%, ${a[2]}55, transparent 60%), radial-gradient(120% 90% at 90% 0%, ${a[3]}66, transparent 60%), ${bg}` }
+      : { background: bg };
+    return h("button", { class: "theme-card" + (PREFS.theme === id ? " on" : ""), type: "button", "aria-pressed": PREFS.theme === id,
+      onclick: async () => { await savePrefs({ theme: id }); redraw(); } },
+      h("span", { class: "preview", style: preview },
+        h("i", { style: { height: "60%", background: surface, boxShadow: "0 0 0 1px rgba(127,127,127,.25)" } }),
+        h("i", { style: { height: "85%", background: `linear-gradient(${a[2]}, ${a[3]})` } }),
+        h("i", { style: { height: "40%", background: surface, boxShadow: "0 0 0 1px rgba(127,127,127,.25)" } })),
+      h("span", { class: "label" }, label));
+  }));
+  const swatches = h("div", { class: "swatches" }, ACCENTS.map(([id, label, a1, a2]) =>
+    h("button", { class: "swatch" + (PREFS.accent === id ? " on" : ""), type: "button", title: label, "aria-label": label,
+      "aria-pressed": PREFS.accent === id, style: { background: `linear-gradient(135deg, ${a1}, ${a2})` },
+      onclick: async () => { await savePrefs({ accent: id }); redraw(); } })));
+  const iconChoices = [["match", "Match colour"], ...ACCENTS.map(([id, label]) => [id, label]), ["midnight", "Midnight"]];
+  const current = PREFS.app_icon === "match" ? PREFS.accent : PREFS.app_icon;
+  const icons = h("div", { class: "icons" }, iconChoices.map(([id, label]) =>
+    h("button", { class: "icon-choice" + (PREFS.app_icon === id ? " on" : ""), type: "button", "aria-pressed": PREFS.app_icon === id,
+      onclick: async () => { await savePrefs({ app_icon: id }); redraw(); } },
+      h("img", { src: `/assets/icon-${id === "match" ? current : id}.png`, alt: "" }), label)));
+  return h("div", { class: "panel" }, h("h2", {}, "Appearance"),
+    h("p", { class: "muted small" }, "Theme"), themes,
+    h("p", { class: "muted small", style: { marginTop: "16px" } }, "Colour"), swatches,
+    st.desktop ? [h("p", { class: "muted small", style: { marginTop: "16px" } }, "App icon"), icons,
+      h("p", { class: "faint small", style: { marginTop: "6px" } }, "Shown in the Dock while Tally is open.")] : null);
+}
+
+function loggingPanel(st) {
+  const folders = h("textarea", { class: "input", placeholder: "One folder per line, e.g. ~/Movies/Home videos", "aria-label": "Folders to ignore" },
+    (PREFS.ignored_folders || []).join("\n"));
+  const saveFolders = h("button", { class: "btn", type: "button", onclick: async () => {
+    try { await savePrefs({ ignored_folders: folders.value.split("\n") }); toast("Saved"); } catch (err) { toast(err.message); }
+  } }, "Save folders");
+  return h("div", { class: "panel" }, h("h2", {}, "Logging"),
+    settingRow("Pause logging", "Stop recording what you play until you turn this off. Also in the menu bar.",
+      toggle(PREFS.paused, (v) => savePrefs({ paused: v }), "Pause logging")),
+    st.desktop ? settingRow("Open at login", "Start Tally quietly when you log in, so it's always logging.",
+      toggle(st.login_item, async (v) => { await api("/api/settings", { login_item: v }); }, "Open at login")) : null,
+    settingRow("Only shows and movies", "Skip music, phone videos, screen recordings and your own edits. Downloaded shows and movies, and libraries named like \"Movie (2010)\", are still logged.",
+      toggle(PREFS.only_releases, (v) => savePrefs({ only_releases: v }), "Only shows and movies")),
+    settingRow("Ignore quick peeks", "Don't log videos you close again within",
+      choice([[20, "20 seconds"], [60, "1 minute"], [120, "2 minutes"], [300, "5 minutes"]], PREFS.min_play_seconds,
+        (v) => savePrefs({ min_play_seconds: v }), "Ignore quick peeks")),
+    settingRow("Counts as finished", "When an episode or movie is marked watched. Earlier entries are rechecked when you change this.",
+      choice([[80, "80% or last 5 min"], [85, "85% or last 4 min (credits)"], [90, "90% or last 2 min"], [95, "95% or last minute"], [98, "The very end"]],
+        PREFS.finish_at, async (v) => { await savePrefs({ finish_at: v }); toast("Updated"); }, "Counts as finished")),
+    h("div", { class: "setting", style: { display: "block" } },
+      h("div", { class: "row-title" }, "Folders to ignore"),
+      h("div", { class: "row-sub", style: { whiteSpace: "normal", marginBottom: "8px" } }, "Nothing inside these folders is ever logged."),
+      folders, h("div", { class: "btn-row", style: { marginTop: "8px" } }, saveFolders)));
+}
+
+function displayPanel() {
+  const seg = (options, value, onpick) => h("div", { class: "seg" }, options.map(([v, text]) =>
+    h("button", { class: v === value ? "on" : null, type: "button", onclick: onpick.bind(null, v) }, text)));
+  return h("div", { class: "panel" }, h("h2", {}, "Display"),
+    settingRow("Week starts on", "For This week on the home page.",
+      seg([["monday", "Monday"], ["sunday", "Sunday"]], PREFS.week_start, async (v) => { await savePrefs({ week_start: v }); route({ quiet: true }); })),
+    settingRow("Hide spoilers", "Blur the names of episodes you haven't watched yet. Hover to reveal.",
+      toggle(PREFS.hide_spoilers, (v) => savePrefs({ hide_spoilers: v }), "Hide spoilers")));
+}
+
 async function renderSettings() {
-  const st = await api("/api/status");
+  const [st] = await Promise.all([api("/api/status"), loadPrefs()]);
   const keyInput = h("input", { class: "input", type: "password", placeholder: st.tmdb_key_set ? "Key saved — paste a new one to replace" : "Paste a TMDB API key (optional)", autocomplete: "off", "aria-label": "TMDB API key" });
   const save = h("button", { class: "btn primary", type: "button", onclick: async () => {
     save.disabled = true;
     try { await api("/api/settings", { tmdb_key: keyInput.value }); toast(keyInput.value ? "Key saved" : "Key removed"); route(); }
     catch (err) { toast(err.message); save.disabled = false; }
   } }, "Save");
+  const setup = h("button", { class: "btn", type: "button", onclick: async () => {
+    setup.disabled = true;
+    try { const res = await api("/api/setup-players", {}); toast(res.lines.join(" · ") || "Done"); }
+    catch (err) { toast(err.message); }
+    setup.disabled = false;
+  } }, "Set up players");
+  const importIina = h("button", { class: "btn", type: "button", onclick: async () => {
+    importIina.disabled = true;
+    try { const res = await api("/api/import-iina", {}); toast(res.added ? `Added ${res.added} from IINA's history` : "Nothing new in IINA's history"); }
+    catch (err) { toast(err.message); }
+    importIina.disabled = false;
+  } }, "Import IINA history");
   return [
     h("h1", { style: { marginBottom: "18px" } }, "Settings"),
+    appearancePanel(st),
+    loggingPanel(st),
+    displayPanel(),
     h("div", { class: "panel" }, h("h2", {}, "Players"),
       h("p", { class: "muted small" }, "Tally checks these every few seconds. Green means it's talking to the player right now."),
       h("div", { style: { marginTop: "10px" } }, st.sources.map((s) => h("div", { class: "source" },
         h("span", { class: "status-dot " + s.status }),
         h("div", { class: "row-main" }, h("div", { class: "row-title" }, s.label), h("div", { class: "row-sub", style: { whiteSpace: "normal" } }, s.detail || "", h("div", { class: "faint" }, SOURCE_HELP[s.name] || "")))))),
+      h("div", { class: "btn-row", style: { marginTop: "12px" } }, setup, st.iina_history ? importIina : null),
     ),
     h("div", { class: "panel" }, h("h2", {}, "Movie database"),
       h("p", { class: "muted small" }, "Shows use TVmaze and movies use IMDb + Wikipedia, no setup needed. For better movie matches, add a free TMDB key from themoviedb.org → Settings → API."),
@@ -566,13 +755,14 @@ async function renderSettings() {
       h("p", {}, h("code", {}, st.data_file)),
       h("div", { class: "btn-row", style: { marginTop: "12px" } },
         h("a", { class: "btn", href: "/api/export" }, "Export as JSON")),
-      h("p", { class: "muted small", style: { marginTop: "12px" } }, "To open Tally from your phone on the same Wi-Fi, run it with ", h("code", {}, "python3 -m tally run --lan"), ".")),
+      st.desktop ? null : h("p", { class: "muted small", style: { marginTop: "12px" } }, "To open Tally from your phone on the same Wi-Fi, run it with ", h("code", {}, "python3 -m tally run --lan"), ".")),
     h("div", { class: "panel" }, h("h2", {}, "About"),
       h("p", { class: "muted small" }, `Tally ${st.version} · listening on 127.0.0.1:${st.port} · log: `, h("code", {}, st.log_file)),
       h("div", { class: "btn-row", style: { marginTop: "12px" } },
         h("button", { class: "btn", type: "button", onclick: async () => {
-          if (!confirm("Quit Tally? It starts again at your next login.")) return;
-          await api("/api/quit", {}); document.body.replaceChildren(h("div", { class: "view" }, empty("Tally has stopped", "It will start again when you log in.")));
+          const later = st.login_item ? "It starts again at your next login." : "Nothing is logged until you open it again.";
+          if (!confirm(`Quit Tally? ${later}`)) return;
+          await api("/api/quit", {}); document.body.replaceChildren(h("div", { class: "view" }, empty("Tally has stopped", later)));
         } }, "Quit Tally"))),
   ];
 }
@@ -609,20 +799,29 @@ async function route(opts = {}) {
     currentRender = { hash, live };
   } catch (err) {
     if (mine !== routeSeq) return;
-    el.replaceChildren(empty("Couldn't load this page", err.message === "Failed to fetch" ? "Tally isn't running. Start it with: python3 -m tally install" : err.message));
+    el.replaceChildren(empty("Couldn't load this page", err.message === "Failed to fetch" ? "Tally isn't running. Open the Tally app to start it." : err.message));
   }
   // Live pages refresh while open so "now playing" stays current
   if (live) {
     const tick = () => {
       if (location.hash !== hash && !(hash === "#/" && !location.hash)) return;
       const busy = document.querySelector(".menu, .backdrop") || (document.activeElement && document.activeElement.tagName === "INPUT");
-      if (document.hidden || busy) { refreshTimer = setTimeout(tick, 5000); return; }
+      if (document.hidden || busy) { refreshTimer = setTimeout(tick, refreshEvery); return; }
       route({ quiet: true });
     };
-    refreshTimer = setTimeout(tick, 5000);
+    refreshTimer = setTimeout(tick, refreshEvery);
   }
 }
 
-window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
+window.addEventListener("hashchange", () => {
+  try { localStorage.setItem("tally-last", location.hash); } catch (e) { /* private window */ }
+  route(); window.scrollTo(0, 0);
+});
+// The app unloads the page while its window is closed and reopens it at #restore
+if (location.hash === "#restore") {
+  let last = "#/";
+  try { last = localStorage.getItem("tally-last") || "#/"; } catch (e) { /* private window */ }
+  history.replaceState(null, "", last === "#restore" ? "#/" : last);
+}
 document.addEventListener("visibilitychange", () => { if (!document.hidden && currentRender && currentRender.live) route({ quiet: true }); });
-route();
+loadPrefs().finally(route);

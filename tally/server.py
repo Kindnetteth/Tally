@@ -15,12 +15,14 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import __version__, metadata, paths
+from . import __version__, iina_import, metadata, paths, service
+from . import prefs as user_prefs
 from .api import Api
 
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
+ASSETS_DIR = Path(__file__).parent / "assets"
 
 
 class App:
@@ -34,7 +36,11 @@ class App:
         self.sources = sources
         self.port = port
         self.lan = lan
+        self.desktop = False  # True inside the desktop app, which sets the hooks below
         self.request_quit = lambda: None
+        self.request_show = lambda: None
+        self.prefs_changed = lambda prefs: None
+        self.wait_for_show = lambda timeout: False
 
 
 def make_handler(app: App):
@@ -100,13 +106,24 @@ def make_handler(app: App):
                     return self._static("index.html")
                 if path.startswith("/static/"):
                     return self._static(path[len("/static/"):])
+                if m := re.fullmatch(r"/assets/(icon-[a-z]+\.png)", path):
+                    target = ASSETS_DIR / m.group(1)
+                    if not target.is_file():
+                        return self._error(404, "not found")
+                    return self._send(200, target.read_bytes(), "image/png", {"Cache-Control": "max-age=86400"})
+                if path == "/api/prefs":
+                    return self._json(user_prefs.load(app.db))
                 if m := re.fullmatch(r"/poster/(\d+)", path):
                     return self._poster(int(m.group(1)))
                 if path == "/api/ping":
-                    return self._json({"app": "tally", "version": __version__})
+                    return self._json({"app": "tally", "version": __version__, "desktop": app.desktop})
                 if path == "/api/home":
                     week_start = float(q["week_start"][0]) if "week_start" in q else None
                     return self._json(app.api.home(app.tracker.now_playing(), week_start))
+                if path == "/api/ui-wait":
+                    return self._json({"show": app.wait_for_show(25)})
+                if path == "/api/updates":
+                    return self._json(app.api.updates())
                 if path == "/api/shows":
                     return self._json(app.api.shows())
                 if path == "/api/movies":
@@ -160,6 +177,9 @@ def make_handler(app: App):
                 "tmdb_key_set": bool(app.db.get_setting("tmdb_key")),
                 "unmatched": app.db.one("SELECT COUNT(*) AS n FROM titles WHERE matched = 0")["n"],
                 "log_file": str(paths.log_path()),
+                "desktop": app.desktop,
+                "iina_history": iina_import.available(),
+                "login_item": service.app_login_enabled() if app.desktop else service.installed(),
             }
 
         # ---- POST -------------------------------------------------------
@@ -220,11 +240,31 @@ def make_handler(app: App):
                         if key and not metadata.tmdb_key_works(key):
                             return self._error(400, "TMDB didn't accept that key")
                         app.db.set_setting("tmdb_key", key or None)
+                    if "login_item" in body and app.desktop:
+                        service.set_app_login(bool(body["login_item"]))
+                    changes = {k: v for k, v in body.items() if k in user_prefs.DEFAULTS}
+                    if changes:
+                        prefs = user_prefs.save(app.db, changes)
+                        if "finish_at" in changes:
+                            app.db.recheck_completed(*user_prefs.finish_rule(prefs))
+                        app.prefs_changed(prefs)
+                        return self._json({"ok": True, "prefs": prefs})
                     return self._json({"ok": True})
                 if path == "/api/quit":
                     self._json({"ok": True})
                     app.request_quit()
                     return None
+                if path == "/api/show":
+                    app.request_show()
+                    return self._json({"ok": True})
+                if path == "/api/setup-players":
+                    from .setup_players import setup_all
+
+                    return self._json({"ok": True, "lines": setup_all(app.db)})
+                if path == "/api/import-iina":
+                    added = iina_import.import_history(app.db, app.matcher)
+                    app.db.set_setting("iina_imported", "1")
+                    return self._json({"ok": True, "added": added})
                 if path == "/api/rematch-unmatched":
                     for row in app.db.query("SELECT id FROM titles WHERE matched = 0"):
                         app.matcher.enqueue(row["id"])

@@ -37,6 +37,7 @@ _IGNORED_DIRS = ("/System/", "/Library/", "/Applications/", "/private/var/", "/u
 class MacOpenFiles(Source):
     name = "openfiles"
     label = "Other players (open files)"
+    idle_interval = 15.0  # runs lsof, so not every few seconds while nothing plays
 
     def poll(self) -> list[PlaybackState]:
         cmd = ["lsof", "-w", "-n", "-P", "-Fpcn"]
@@ -80,6 +81,7 @@ _TITLE_FILE_RE = re.compile(
 class WindowsOpenFiles(Source):
     name = "openfiles"
     label = "Other players (open files)"
+    idle_interval = 15.0
 
     def poll(self) -> list[PlaybackState]:
         try:

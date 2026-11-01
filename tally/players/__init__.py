@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
@@ -27,10 +28,12 @@ class PlaybackState:
 class Source:
     name = "source"
     label = "Source"
+    idle_interval = 0.0  # seconds between polls while nothing is playing (0 = every time)
 
     def __init__(self):
         self.status = "waiting"  # 'connected', 'waiting', 'off', 'error'
         self.detail = ""
+        self.last_poll = 0.0
 
     def poll(self) -> list[PlaybackState]:
         raise NotImplementedError
@@ -53,10 +56,17 @@ def all_sources(db) -> list[Source]:
     return sources
 
 
-def poll_all(sources: list[Source]) -> list[PlaybackState]:
-    """Exact sources win over the open-file fallback for the same file."""
+def poll_all(sources: list[Source], idle: bool = False) -> list[PlaybackState]:
+    """Exact sources win over the open-file fallback for the same file.
+
+    While idle (nothing playing), sources that are costly to ask are polled less often.
+    """
     states: list[PlaybackState] = []
+    now = time.monotonic()
     for source in sources:
+        if idle and source.idle_interval and now - source.last_poll < source.idle_interval:
+            continue
+        source.last_poll = now
         try:
             found = source.poll()
         except Exception as exc:  # a broken player must not stop logging

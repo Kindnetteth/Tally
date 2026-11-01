@@ -126,6 +126,10 @@ def _to_spaces(name: str) -> str:
 
 def _remove_brackets(name: str) -> tuple[str, bool]:
     leading_group = bool(re.match(r"^\s*[\[【]", name))
+    # "(CBB) Show - 01": a release group in parentheses, not part of the title
+    m = re.match(r"^\s*\(([^)]{1,20})\)\s*(?=\S)", name)
+    if m and not _YEAR_RE.fullmatch(m.group(1).strip()):
+        name, leading_group = name[m.end():], True
     name = re.sub(r"\[[^\]]*\]|【[^】]*】|\{[^}]*\}", " ", name)
     return re.sub(r"\s+", " ", name).strip(), leading_group
 
@@ -188,6 +192,12 @@ def _folder_context(parts: list[str]) -> tuple[str | None, int | None]:
         if _SPECIALS_DIR_RE.match(cleaned) and i == len(folders) - 1:
             season = 0
             continue
+        # Complete-series packs number their season folders: "02. Tokyo Ghoul √A"
+        m = re.match(r"^(\d{1,2})\.\s+\S", raw)
+        if (m and season is None and i == len(folders) - 1 and i > 0
+                and re.search(r"\b(?:complete|collection|batch|seasons)\b", folders[i - 1], re.I)):
+            season = int(m.group(1))
+            cleaned = cleaned[m.end() - 1:]
         candidate = _clean_title(_cut_junk(_remove_site_prefix(cleaned)))
         # Season packs: "Show.Name.S02.1080p" folders
         candidate = re.split(r"(?<![a-z0-9])s\d{1,2}(?![0-9])|\bseason\s*\d", candidate, flags=re.I)[0]
@@ -196,6 +206,17 @@ def _folder_context(parts: list[str]) -> tuple[str | None, int | None]:
             show = candidate
         break
     return show, season
+
+
+_TITLE_SEASON_RE = re.compile(r"^(.+?)\s+(?:(\d{1,2})(?:st|nd|rd|th)\s+season|season\s+(\d{1,2}))$", re.I)
+
+
+def _season_from_title(title: str) -> tuple[str, int | None]:
+    """'Dandadan 2nd Season' -> ('Dandadan', 2), as anime releases often name later seasons."""
+    m = _TITLE_SEASON_RE.match(title)
+    if not m:
+        return title, None
+    return m.group(1), int(m.group(2) or m.group(3))
 
 
 def _usable_title(title: str) -> bool:
@@ -244,13 +265,17 @@ def parse(path: str) -> ParsedName:
             title, year = _split_year(folder_show) if folder_show else ("", None)
         if not title:
             continue
+        loose = kind in ("ep", "dash")
+        title, title_season = _season_from_title(title)
+        if title_season is not None and season is None:
+            season, loose = title_season, False  # the number counts within that season
         if episode_end is not None and episode_end <= (episode or 0):
             episode_end = None
         return ParsedName(
             title=title, kind="show", year=year, season=season, episode=episode,
             episode_end=episode_end, air_date=air_date,
             episode_title=_clean_episode_title(after), filename=filename, anime=anime_style,
-            loose=kind in ("ep", "dash"),
+            loose=loose,
         )
 
     # Anime batches without a dash: "[Group] Title 05 [1080p]"
@@ -295,3 +320,33 @@ def is_video_path(path: str) -> bool:
     parts = _split_path(path) if path else []
     name = parts[-1] if parts else ""
     return "." in name and name.rsplit(".", 1)[1].lower() in VIDEO_EXTENSIONS
+
+
+RELEASE_TAGS = re.compile(
+    r"\b(?:480p|576p|720p|1080p|2160p|uhd|hdr|hdr10|blu ?ray|bdrip|brrip|bd|bdremux|remux|web ?dl|webrip|"
+    r"hdtv|dvdrip|dcp|x264|x265|h ?264|h ?265|hevc|av1|xvid|10 ?bit|aac\d?|ddp?\d|flac\d?|dts|truehd|"
+    r"dual ?audio|multi ?subs?|eng ?subs?)\b", re.I)
+EPISODE_TAG = re.compile(r"\bs\d{1,2} ?e\d{1,3}\b", re.I)
+EXTRAS = re.compile(r"\b(?:nc ?op|nc ?ed|extras?|specials? features?|featurettes?|trailers?|samples?|bonus)\b", re.I)
+
+
+def _words(text: str) -> str:
+    return re.sub(r"[._\-\[\](){}+]+", " ", text)
+
+
+def looks_like_release(path: str) -> bool:
+    """True for a show or movie, False for music, your own clips and everything else.
+
+    Downloaded shows and movies carry an S01E02 marker or release tags (1080p,
+    x265, WEBRip...) in the file or folder name. A library named the Plex way,
+    "Movie (2010).mkv" or "Show/Season 2/05.mkv", counts too.
+    """
+    p = PurePosixPath(path.replace("\\", "/"))
+    name, folder = _words(p.stem), _words(p.parent.name)
+    if EXTRAS.search(name) or EXTRAS.search(folder):
+        return False  # creditless openings, trailers and other disc extras
+    if EPISODE_TAG.search(name) or RELEASE_TAGS.search(name) or RELEASE_TAGS.search(folder):
+        return True
+    if re.search(r"\((?:19|20)\d\d\)", p.stem + " " + p.parent.name):
+        return True
+    return bool(_SEASON_DIR_RE.match(_to_spaces(p.parent.name)) and re.match(r"\d{1,3}\b", p.stem))

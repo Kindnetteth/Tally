@@ -7,6 +7,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
+from . import prefs as user_prefs
 from .db import Database, is_complete
 from .matcher import Matcher
 from .parser import parse
@@ -40,6 +41,7 @@ class Tracker:
         self.db = db
         self.matcher = matcher
         self.sessions: dict[str, Session] = {}
+        self.prefs = dict(user_prefs.DEFAULTS)
 
     def now_playing(self) -> list[dict]:
         out = []
@@ -53,8 +55,13 @@ class Tracker:
 
     def update(self, states: list[PlaybackState], now: float | None = None) -> None:
         now = time.time() if now is None else now
+        self.prefs = user_prefs.load(self.db)
+        if self.prefs["paused"]:
+            states = []
         seen = set()
         for state in states:
+            if not user_prefs.should_log(state.path, self.prefs):
+                continue
             key = os.path.normcase(state.path)
             seen.add(key)
             session = self.sessions.get(key)
@@ -76,7 +83,7 @@ class Tracker:
     def _sync(self, s: Session, now: float) -> None:
         st = s.state
         if s.watch_id is None:
-            if s.played < MIN_PLAY_SECONDS:
+            if s.played < self.prefs.get("min_play_seconds", MIN_PLAY_SECONDS):
                 return
             self._open_row(s, now)
         position = st.position
@@ -97,7 +104,7 @@ class Tracker:
         # The matcher may have remapped the episode since we opened the row
         s.title_id, s.season, s.episode = row["title_id"], row["season"], row["episode"]
         max_pos = max(row["max_position"] or 0, position or 0)
-        completed = 1 if (row["completed"] or is_complete(max_pos, duration)) else 0
+        completed = 1 if (row["completed"] or is_complete(max_pos, duration, *user_prefs.finish_rule(self.prefs))) else 0
         self.db.execute(
             """UPDATE watches SET last_seen_at=?, position=?, duration=COALESCE(?, duration),
                max_position=?, watched_seconds=?, completed=?, estimated=?, player=? WHERE id=?""",

@@ -1,4 +1,10 @@
-"""Start Tally automatically at login (LaunchAgent on macOS, Startup folder on Windows)."""
+"""Start Tally automatically at login (LaunchAgent on macOS, Startup folder on Windows).
+
+There are two kinds of login item. The desktop app (Tally.app / Tally.exe)
+starts itself with --background. The older command-line install runs
+`python -m tally run` from a copy of the package; the desktop app removes
+that one the first time it starts.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ from pathlib import Path
 from . import paths
 
 LABEL = "com.tally.agent"
+APP_LABEL = "com.tally.app"
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 
@@ -144,4 +151,72 @@ def installed() -> bool:
         return _plist_path().exists()
     if sys.platform.startswith("win"):
         return _startup_script().exists()
+    return False
+
+
+# ---- desktop app ----------------------------------------------------------
+
+def _app_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{APP_LABEL}.plist"
+
+
+def _app_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--background"]
+    return [_python(windowless=True), "-m", "tally.desktop", "--background"]
+
+
+def app_login_enabled() -> bool:
+    if sys.platform == "darwin":
+        return _app_plist_path().exists()
+    if sys.platform.startswith("win"):
+        script = _startup_script()
+        return script.exists() and "-m tally run" not in script.read_text(encoding="utf-8", errors="replace")
+    return False
+
+
+def set_app_login(enabled: bool) -> None:
+    """Turn the desktop app's login item on or off.
+
+    This only writes or removes the file the system reads at login, so it
+    never starts or stops the copy that's running now.
+    """
+    cmd = _app_command()
+    if sys.platform == "darwin":
+        path = _app_plist_path()
+        if enabled:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            plist = {"Label": APP_LABEL, "ProgramArguments": cmd, "RunAtLoad": True,
+                     "ProcessType": "Interactive", "LimitLoadToSessionType": "Aqua"}
+            if not getattr(sys, "frozen", False):
+                plist["WorkingDirectory"] = str(PACKAGE_DIR.parent)
+            with open(path, "wb") as fh:
+                plistlib.dump(plist, fh)
+        elif path.exists():
+            path.unlink()
+    elif sys.platform.startswith("win"):
+        script = _startup_script()
+        if enabled:
+            script.parent.mkdir(parents=True, exist_ok=True)
+            exe = cmd[0].replace('"', '""')
+            cwd = "" if getattr(sys, "frozen", False) else \
+                f'sh.CurrentDirectory = "{str(PACKAGE_DIR.parent).replace(chr(34), chr(34) * 2)}"\r\n'
+            script.write_text('Set sh = CreateObject("WScript.Shell")\r\n' + cwd +
+                              f'sh.Run """{exe}"" {" ".join(cmd[1:])}", 0, False\r\n', encoding="utf-8")
+        elif script.exists():
+            script.unlink()
+
+
+def remove_legacy() -> bool:
+    """Remove the command-line install's login item. Returns True if there was one."""
+    if sys.platform == "darwin":
+        if not _plist_path().exists():
+            return False
+        _uninstall_mac()
+        return True
+    if sys.platform.startswith("win"):
+        script = _startup_script()
+        if script.exists() and "-m tally run" in script.read_text(encoding="utf-8", errors="replace"):
+            script.unlink()
+            return True
     return False

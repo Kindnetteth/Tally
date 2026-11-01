@@ -82,7 +82,7 @@ class Api:
         """Where you are in a show: resume a partial episode, or the next one."""
         # Latest real viewing; a manual mark only counts if it's further along
         w = self.db.one(_WATCH_SQL + " WHERE w.title_id = ? AND w.episode IS NOT NULL AND w.manual = 0 "
-                        "ORDER BY w.last_seen_at DESC LIMIT 1", (title_id,))
+                        "ORDER BY w.last_seen_at DESC, w.season DESC, w.episode DESC LIMIT 1", (title_id,))
         marked = self.db.one(_WATCH_SQL + " WHERE w.title_id = ? AND w.episode IS NOT NULL AND w.manual = 1 "
                              "ORDER BY w.season DESC, w.episode DESC LIMIT 1", (title_id,))
         if marked and (w is None or (marked["season"] or 0, marked["episode"]) > (w["season"] or 0, w["episode"])):
@@ -90,7 +90,11 @@ class Api:
         if w is None:
             return None
         last = watch_dict(w)
-        if not w["completed"]:
+        # A partial viewing doesn't count if that episode is marked watched elsewhere
+        done = w["completed"] or (w["episode"] is not None and self.db.one(
+            "SELECT 1 FROM watches WHERE title_id = ? AND season IS ? AND episode = ? AND completed = 1",
+            (title_id, w["season"], w["episode"])))
+        if not done:
             return {"state": "resume", "season": w["season"], "episode": w["episode"],
                     "episode_name": w["episode_name"], "progress": last["progress"],
                     "position": last["position"], "duration": last["duration"],
@@ -155,6 +159,61 @@ class Api:
                       "total_seconds": total["secs"], "total_watches": total["n"], "total_titles": total["titles"],
                       "first_watch": total["first"]},
         }
+
+    def updates(self) -> list[dict]:
+        """New and upcoming seasons and episodes of every show you've watched.
+
+        Out now: the next season once you've finished the one before, or
+        episodes that came out after you last watched. Coming up: a new
+        season's premiere (even if you're behind), the next episode once you're
+        caught up, or a season that's announced without a date. Backlog that
+        aired before you last watched stays in Continue watching.
+        """
+        today = dt.date.today().isoformat()
+        out = []
+        for t in self.db.query(f"SELECT {_TITLE_COLS} FROM titles t WHERE t.kind = 'show' "
+                               "AND EXISTS (SELECT 1 FROM watches w WHERE w.title_id = t.id)"):
+            eps = [e for e in self._episode_list(t["id"]) if e["season"] > 0]
+            st = self._show_state(t["id"])
+            if not eps or not st:
+                continue
+            seen = self.db.one("SELECT MAX(season) AS s FROM watches WHERE title_id = ? AND episode IS NOT NULL",
+                               (t["id"],))["s"] or 0
+            base = {"title": title_dict(t), "last_watched": st["last_watched"]}
+
+            def item(kind, ep, **extra):
+                return {**base, "kind": kind, "season": ep["season"], "episode": ep["number"],
+                        "episode_name": ep["name"], "airdate": ep["airdate"],
+                        "season_size": len([e for e in eps if e["season"] == ep["season"]]), **extra}
+
+            found = None
+            if st["state"] in ("next", "upcoming") and not st.get("guess"):
+                nxt = next(e for e in eps if (e["season"], e["number"]) == (st["season"], st["episode"]))
+                new_season = nxt["number"] == 1 and nxt["season"] > (st["watch"]["season"] or 0)
+                aired = len([e for e in eps if (e["season"], e["number"]) >= (nxt["season"], nxt["number"])
+                             and e["airdate"] and e["airdate"] <= today])
+                if st["state"] == "upcoming":
+                    found = item("premiere" if new_season else "next_episode", nxt)
+                elif nxt["airdate"] and new_season:
+                    found = item("new_season", nxt, count=aired)
+                elif nxt["airdate"] and dt.datetime.fromisoformat(nxt["airdate"]).timestamp() + 86400 >= st["last_watched"]:
+                    found = item("new_episodes", nxt, count=aired)
+            if found is None:
+                # A later season you haven't started: premiering soon, or announced
+                later = [e for e in eps if e["season"] > seen]
+                premiere = next((e for e in later if e["number"] == 1 and e["airdate"] and e["airdate"] > today), None)
+                if premiere:
+                    found = item("premiere", premiere)
+                elif later and not any(e["airdate"] and e["airdate"] <= today for e in later) \
+                        and not any(e["airdate"] for e in later if e["season"] == later[0]["season"]):
+                    found = item("announced", later[0])
+            if found:
+                out.append(found)
+        order = {"new_season": 0, "new_episodes": 0, "premiere": 1, "next_episode": 1, "announced": 2}
+        out.sort(key=lambda i: (order[i["kind"]],
+                                -(dt.date.fromisoformat(i["airdate"]).toordinal()) if order[i["kind"]] == 0 else 0,
+                                i["airdate"] or "" if order[i["kind"]] == 1 else ""))
+        return out
 
     def shows(self) -> list[dict]:
         out = []

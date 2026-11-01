@@ -12,12 +12,23 @@ dependencies = []
 
 [project.optional-dependencies]
 windows = ["psutil"]
+# The desktop app: a native window plus a menu bar / tray icon
+app = [
+    "pywebview>=5",
+    "pystray; sys_platform == 'win32'",
+    "Pillow; sys_platform == 'win32'",
+    "psutil; sys_platform == 'win32'",
+]
+build = ["pyinstaller>=6", "Pillow"]
 
 [project.scripts]
 tally = "tally.__main__:main"
+
+[project.gui-scripts]
+tally-app = "tally.desktop:main"
 
 [tool.setuptools.packages.find]
 include = ["tally*"]
 
 [tool.setuptools.package-data]
-tally = ["web/*"]
+tally = ["web/*", "assets/*"]

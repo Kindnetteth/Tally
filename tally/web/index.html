@@ -4,14 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tally</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23e8590c'/%3E%3Cpath d='M9 8v16M14 8v16M19 8v16M24 8v16M6 20L27 12' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23a35bf0'/%3E%3Cpath d='M9 8v16M14 8v16M19 8v16M24 8v16M6 20L27 12' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script>
+    // Apply the saved look before anything paints (the page confirms it from /api/prefs)
+    try {
+      const p = JSON.parse(localStorage.getItem("tally-look") || "{}");
+      if (p.theme && p.theme !== "system") document.documentElement.dataset.theme = p.theme;
+      document.documentElement.dataset.accent = p.accent || "orchid";
+    } catch (e) { document.documentElement.dataset.accent = "orchid"; }
+  </script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
       <a class="brand" href="#/">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M9 8v16M14 8v16M19 8v16M24 8v16M6 20L27 12"/></svg>
+        <span class="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 8v16M14 8v16M19 8v16M24 8v16M6 20L27 12"/></svg></span>
         <span>Tally</span>
       </a>
       <nav class="tabs" aria-label="Sections">

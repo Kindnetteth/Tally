@@ -1,5 +1,6 @@
 """Command line: `python -m tally <command>`.
 
+    app        open the desktop app (window + menu bar icon)
     install    set up your players, start Tally now and at every login
     run        run in the foreground (what the login item runs)
     open       open the browse page
@@ -7,6 +8,7 @@
     setup      only configure players (add --undo to reverse)
     uninstall  stop starting at login (your history is kept)
     parse      show how a file name is understood
+    import-iina  add what you watched in IINA before Tally was running
 """
 
 from __future__ import annotations
@@ -23,10 +25,6 @@ import urllib.request
 import webbrowser
 
 from . import __version__, paths, service
-
-POLL_PLAYING = 3.0
-POLL_IDLE = 5.0
-
 
 def _url(port: int) -> str:
     return f"http://127.0.0.1:{port}/"
@@ -52,55 +50,25 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def cmd_run(args) -> int:
-    from .db import Database
-    from .matcher import Matcher
-    from .players import all_sources, poll_all
-    from .server import App, serve
-    from .tracker import Tracker
+    from .engine import Engine
 
     _setup_logging(args.verbose)
-    log = logging.getLogger("tally")
-    db = Database()
-    port = args.port or int(db.get_setting("port", str(paths.DEFAULT_PORT)))
-    matcher = Matcher(db)
-    tracker = Tracker(db, matcher)
-    sources = all_sources(db)
-    app = App(db, matcher, tracker, sources, port, lan=args.lan)
+    engine = Engine(args.port, lan=args.lan)
     try:
-        server = serve(app)
+        engine.start()
     except OSError:
-        if _ping(port):
-            print(f"Tally is already running at {_url(port)}")
+        if _ping(engine.port):
+            print(f"Tally is already running at {_url(engine.port)}")
             return 0
-        log.error("port %s is taken by another program; use --port", port)
-        print(f"Port {port} is in use by another program. Try: python -m tally run --port 8738", file=sys.stderr)
+        logging.getLogger("tally").error("port %s is taken by another program; use --port", engine.port)
+        print(f"Port {engine.port} is in use by another program. Try: python -m tally run --port 8738",
+              file=sys.stderr)
         return 1
-    matcher.start()
-    log.info("Tally %s running at %s (data: %s)", __version__, _url(port), db.path)
     if sys.stdout and sys.stdout.isatty():
-        print(f"Tally is running at {_url(port)}  (Ctrl+C to stop)")
-
-    stopping = False
-
-    def stop(*_):
-        nonlocal stopping
-        stopping = True
-
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-    app.request_quit = stop  # used by the Quit button on the settings page
-    while not stopping:
-        try:
-            states = poll_all(sources)
-            tracker.update(states)
-        except Exception:
-            log.exception("poll failed")
-        delay = POLL_PLAYING if tracker.sessions else POLL_IDLE
-        end = time.monotonic() + delay
-        while not stopping and time.monotonic() < end:
-            time.sleep(0.25)
-    server.shutdown()
-    log.info("stopped")
+        print(f"Tally is running at {_url(engine.port)}  (Ctrl+C to stop)")
+    signal.signal(signal.SIGTERM, engine.stop)
+    signal.signal(signal.SIGINT, engine.stop)
+    engine.run()
     return 0
 
 
@@ -207,6 +175,28 @@ def cmd_stop(args) -> int:
     return 0
 
 
+def cmd_app(args) -> int:
+    from .desktop import main as desktop_main
+
+    return desktop_main(["--background"] if args.background else [])
+
+
+def cmd_import_iina(args) -> int:
+    from . import iina_import
+    from .db import Database
+    from .matcher import Matcher
+
+    if not iina_import.available():
+        print("No IINA history found")
+        return 1
+    db = Database()
+    matcher = Matcher(db)
+    added = iina_import.import_history(db, matcher)
+    db.set_setting("iina_imported", "1")
+    print(f"Imported {added} entries. Titles are looked up the next time Tally runs.")
+    return 0
+
+
 def cmd_parse(args) -> int:
     from .parser import parse
 
@@ -219,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tally", description="A quiet, local log of what you watch.")
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command")
+
+    p = sub.add_parser("app", help="open the desktop app")
+    p.add_argument("--background", action="store_true", help="start with no window")
+    p.set_defaults(func=cmd_app)
 
     p = sub.add_parser("run", help="run in the foreground")
     p.add_argument("--port", type=int)
@@ -241,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("open", help="open the browse page").set_defaults(func=cmd_open)
     sub.add_parser("status", help="show what Tally sees").set_defaults(func=cmd_status)
     sub.add_parser("stop", help="stop the background app").set_defaults(func=cmd_stop)
+
+    sub.add_parser("import-iina", help="import IINA's playback history").set_defaults(func=cmd_import_iina)
 
     p = sub.add_parser("parse", help="show how file names are understood")
     p.add_argument("names", nargs="+")

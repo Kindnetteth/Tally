@@ -14,6 +14,27 @@ class ShowTests(unittest.TestCase):
         self.assertEqual(p("The.Last.of.Us.S01E03.Long.Long.Time.2160p.HMAX.WEB-DL.x265-GROUP.mkv"),
                          ("The Last of Us", "show", None, 1, 3))
 
+    def test_season_in_title(self):
+        self.assertEqual(p("[DB]Dandadan 2nd Season_-_01_(Dual Audio_10bit_1080p_x265).mkv"),
+                         ("Dandadan", "show", None, 2, 1))
+        self.assertEqual(p("[SubsPlease] Mushoku Tensei Season 2 - 05 (1080p).mkv"),
+                         ("Mushoku Tensei", "show", None, 2, 5))
+
+    def test_numbered_season_folders_in_a_pack(self):
+        pack = "(CBB) Tokyo Ghoul - The Complete Series (BD 1080p)(Dual-Audio)(HEVC-10bit-x265)"
+        self.assertEqual(p(f"/D/{pack}/02. Tokyo Ghoul √A/(CBB) Tokyo Ghoul √A - 01 (1080p)(10bit-x265-AAC).mkv"),
+                         ("Tokyo Ghoul √A", "show", None, 2, 1))
+        self.assertEqual(p(f"/D/{pack}/01. Tokyo Ghoul/(CBB) Tokyo Ghoul - 05 (1080p)(10bit-x265-AAC).mkv"),
+                         ("Tokyo Ghoul", "show", None, 1, 5))
+        # Numbered folders elsewhere aren't seasons
+        self.assertEqual(p("/Videos/02. Anime/[Group] Frieren - 05 [1080p].mkv")[3], None)
+
+    def test_group_in_parentheses(self):
+        self.assertEqual(p("(CBB) Tokyo Ghoul - 01 (1080p)(10bit-x265-AAC).mkv"),
+                         ("Tokyo Ghoul", "show", None, None, 1))
+        self.assertEqual(p("The Mask of Zorro (1998) (1080p BluRay x265 10bit Tigole).mkv")[:3],
+                         ("The Mask of Zorro", "movie", 1998))
+
     def test_episode_title(self):
         r = parse("The.Last.of.Us.S01E03.Long.Long.Time.2160p.HMAX.WEB-DL.x265-GROUP.mkv")
         self.assertEqual(r.episode_title, "Long Long Time")
