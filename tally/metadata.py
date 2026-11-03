@@ -147,6 +147,10 @@ def _score(query: str, year: int | None, cand: Candidate, rank: int = 0) -> floa
 
 def tvmaze_search(query: str) -> list[Candidate]:
     data = _json("https://api.tvmaze.com/search/shows?q=" + urllib.parse.quote(query))
+    plain = re.sub(r"\s*[-:–]\s*", " ", query).strip()
+    if not data and plain != query:
+        # TVmaze finds nothing for "ReZERO - Starting Life in Another World" but does without the dash
+        data = _json("https://api.tvmaze.com/search/shows?q=" + urllib.parse.quote(plain))
     return [_tvmaze_candidate(item["show"]) for item in data]
 
 
@@ -402,6 +406,10 @@ def best_match(kind: str, query: str, year: int | None = None, tmdb_key: str | N
     found: dict[tuple, Candidate] = {}
     for variant in query_variants(query):
         for cand in search(kind, variant, year, tmdb_key)[:5]:
+            if variant != query:
+                # Found by a shortened name ("ReZERO" from "ReZERO - Starting Life..."): it must still
+                # look like the full name, or "Jezero" wins
+                cand.score = min(cand.score, max(_score(query, year, cand), cand.score - 0.15))
             if anime and cand.anime:
                 cand.score += 0.05
             key = (cand.source, cand.source_id)

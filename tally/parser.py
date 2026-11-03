@@ -145,7 +145,13 @@ def _cut_junk(text: str) -> str:
     return text
 
 
+# Edition words that aren't part of a show's name: "Re:ZERO ... Director's Cut"
+_EDITION_RE = re.compile(r"\s*\b(?:director'?s cut|uncut|uncensored|extended(?: edition| cut)?|remastered|"
+                         r"re-?edit(?:ed)?|special edition)\s*$", re.I)
+
+
 def _clean_title(text: str) -> str:
+    text = _EDITION_RE.sub("", text)
     text = re.sub(r"\((?:[^)]*)\)\s*$", lambda m: m.group(0) if _YEAR_RE.fullmatch(m.group(0)[1:-1].strip()) else "", text)
     text = text.replace("(", " ").replace(")", " ")
     text = re.sub(r"\s+", " ", text)

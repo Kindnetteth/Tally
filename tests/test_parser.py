@@ -29,6 +29,10 @@ class ShowTests(unittest.TestCase):
         # Numbered folders elsewhere aren't seasons
         self.assertEqual(p("/Videos/02. Anime/[Group] Frieren - 05 [1080p].mkv")[3], None)
 
+    def test_edition_words_are_not_the_title(self):
+        self.assertEqual(p("[Holomux] ReZERO - Starting Life in Another World Director's Cut 01 [BD 1080p x265].mkv")[:2],
+                         ("ReZERO - Starting Life in Another World", "show"))
+
     def test_group_in_parentheses(self):
         self.assertEqual(p("(CBB) Tokyo Ghoul - 01 (1080p)(10bit-x265-AAC).mkv"),
                          ("Tokyo Ghoul", "show", None, None, 1))
