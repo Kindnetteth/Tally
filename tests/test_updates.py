@@ -64,5 +64,33 @@ class UpdatesTests(unittest.TestCase):
         })
 
 
+class ResumeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.tmp.name) / "t.db")
+        self.api = Api(self.db)
+        self.tid = self.db.execute("INSERT INTO titles(kind, name, matched, created_at) VALUES('show', 'S', 1, 0)").lastrowid
+        for n in (1, 2):
+            self.db.execute("INSERT INTO episodes(title_id, season, number) VALUES(?, 1, ?)", (self.tid, n))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def watch(self, at, completed, manual=0):
+        self.db.execute("INSERT INTO watches(path, filename, title_id, season, episode, started_at, last_seen_at, "
+                        "completed, manual) VALUES('/x', 'x', ?, 1, 1, ?, ?, ?, ?)",
+                        (self.tid, at, at, completed, manual))
+
+    def test_rewatch_partway_offers_resume(self):
+        self.watch(100, 1)  # watched it before
+        self.watch(200, 0)  # rewatching, stopped partway
+        self.assertEqual(self.api._show_state(self.tid)["state"], "resume")
+
+    def test_marked_watched_after_stopping_moves_on(self):
+        self.watch(100, 0)
+        self.watch(200, 1, manual=1)
+        self.assertEqual(self.api._show_state(self.tid)["state"], "next")
+
+
 if __name__ == "__main__":
     unittest.main()

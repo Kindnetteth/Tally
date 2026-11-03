@@ -90,10 +90,11 @@ class Api:
         if w is None:
             return None
         last = watch_dict(w)
-        # A partial viewing doesn't count if that episode is marked watched elsewhere
+        # A partial viewing doesn't count if you marked that episode watched after it. An older
+        # finished viewing does: you're rewatching and stopped partway, so offer Resume.
         done = w["completed"] or (w["episode"] is not None and self.db.one(
-            "SELECT 1 FROM watches WHERE title_id = ? AND season IS ? AND episode = ? AND completed = 1",
-            (title_id, w["season"], w["episode"])))
+            "SELECT 1 FROM watches WHERE title_id = ? AND season IS ? AND episode = ? AND completed = 1 "
+            "AND manual = 1 AND last_seen_at >= ?", (title_id, w["season"], w["episode"], w["last_seen_at"])))
         if not done:
             return {"state": "resume", "season": w["season"], "episode": w["episode"],
                     "episode_name": w["episode_name"], "progress": last["progress"],
