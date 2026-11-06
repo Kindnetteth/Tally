@@ -11,7 +11,7 @@ import urllib.error
 
 from . import metadata
 from .db import Database
-from .parser import _JUNK_RE, ParsedName
+from .parser import _JUNK_RE, ParsedName, normalize
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +128,11 @@ class Matcher:
                     log.info("matched %r by its other name %r", query, alt)
                     break
         if cand is None:
+            existing = existing_title_for(self.db, row["kind"], query, title_id)
+            if existing is not None:
+                self.db.merge_titles(existing, title_id)
+                log.info("matched title %s -> existing title %s by name", title_id, existing)
+                return
             log.info("no match for %r", query)
             self.db.execute("UPDATE titles SET lookup_at = ? WHERE id = ?", (time.time(), title_id))
             return
@@ -193,6 +198,24 @@ class Matcher:
             if new and (new[0], new[1]) != (w["season"], w["episode"]):
                 self.db.execute("UPDATE watches SET season = ?, episode = ? WHERE id = ?",
                                 (new[0], new[1], w["id"]))
+
+
+def existing_title_for(db: Database, kind: str, query: str, exclude_id: int) -> int | None:
+    """An already-matched title whose name starts with this query.
+
+    Anime releases often shorten a show to its first words ("Re Zero" for
+    "Re:ZERO -Starting Life in Another World-"), which metadata search scores
+    too low to accept. If the show is already in the library, use that entry.
+    """
+    q = normalize(query)
+    if not q:
+        return None
+    for row in db.query("SELECT id, name FROM titles WHERE kind = ? AND matched = 1 AND id != ?",
+                        (kind, exclude_id)):
+        name = normalize(row["name"])
+        if name == q or name.startswith(q + " "):
+            return row["id"]
+    return None
 
 
 def alternate_names(path: str, query: str) -> list[str]:

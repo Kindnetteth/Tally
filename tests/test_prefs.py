@@ -65,7 +65,11 @@ class PrefsTests(unittest.TestCase):
 
         self.assertTrue(looks_like_release("/Movies/Arrival (2016)/Arrival (2016).mkv"))
         self.assertTrue(looks_like_release("/TV/Severance/Season 2/05 - Trojan's Horse.mkv"))
+        self.assertTrue(looks_like_release(
+            "/Downloads/[Anime Time] Re Zero Season 02/[Anime Time] Re Zero Season 02 - 01.mkv"))
+        self.assertTrue(looks_like_release("/TV/[Group] Show/Season 2/05.mkv"))
         self.assertFalse(looks_like_release("/Movies/Phone/Birthday.mov"))
+        self.assertFalse(looks_like_release("/Movies/Phone/Season 2.mov"))
 
 
 if __name__ == "__main__":

@@ -333,6 +333,10 @@ RELEASE_TAGS = re.compile(
     r"hdtv|dvdrip|dcp|x264|x265|h ?264|h ?265|hevc|av1|xvid|10 ?bit|aac\d?|ddp?\d|flac\d?|dts|truehd|"
     r"dual ?audio|multi ?subs?|eng ?subs?)\b", re.I)
 EPISODE_TAG = re.compile(r"\bs\d{1,2} ?e\d{1,3}\b", re.I)
+# Anime-style numbering with no SxxExx: "Re Zero Season 02 - 01", "Show Season 2 Episode 5"
+SEASON_EPISODE_TAG = re.compile(
+    r"(?<![a-z0-9])season[ ._-]*\d{1,2}[^a-z0-9]*(?:episode|ep|e)?[ ._-]*\d{1,4}(?:v\d)?(?![0-9a-z])",
+    re.I)
 EXTRAS = re.compile(r"\b(?:nc ?op|nc ?ed|extras?|specials? features?|featurettes?|trailers?|samples?|bonus)\b", re.I)
 
 
@@ -351,8 +355,11 @@ def looks_like_release(path: str) -> bool:
     name, folder = _words(p.stem), _words(p.parent.name)
     if EXTRAS.search(name) or EXTRAS.search(folder):
         return False  # creditless openings, trailers and other disc extras
-    if EPISODE_TAG.search(name) or RELEASE_TAGS.search(name) or RELEASE_TAGS.search(folder):
+    if (EPISODE_TAG.search(name) or SEASON_EPISODE_TAG.search(name)
+            or RELEASE_TAGS.search(name) or RELEASE_TAGS.search(folder)):
         return True
     if re.search(r"\((?:19|20)\d\d\)", p.stem + " " + p.parent.name):
         return True
-    return bool(_SEASON_DIR_RE.match(_to_spaces(p.parent.name)) and re.match(r"\d{1,3}\b", p.stem))
+    # Bracket prefixes like "[Group] Show Season 2" still count as a season folder
+    parent, _ = _remove_brackets(_to_spaces(p.parent.name))
+    return bool(_SEASON_DIR_RE.match(parent) and re.match(r"\d{1,3}\b", p.stem))
