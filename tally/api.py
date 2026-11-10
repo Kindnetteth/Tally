@@ -25,12 +25,13 @@ def title_dict(t) -> dict:
         "overview": t["overview"], "status": t["status"], "matched": bool(t["matched"]),
         "source": t["source"], "source_id": t["source_id"], "imdb_id": t["imdb_id"],
         "runtime": t["runtime"],
+        "hidden": bool(t["hidden"]),
         "poster": f"/poster/{t['id']}?v={int(t['lookup_at'] or 0)}" if t["has_poster"] else None,
     }
 
 
 _TITLE_COLS = ("t.id, t.kind, t.name, t.year, t.overview, t.status, t.matched, t.source, t.source_id, "
-               "t.imdb_id, t.runtime, t.lookup_at, t.poster IS NOT NULL AS has_poster")
+               "t.imdb_id, t.runtime, t.lookup_at, t.poster IS NOT NULL AS has_poster, t.hidden")
 
 _WATCH_SQL = f"""
     SELECT w.*, e.name AS episode_name, {_TITLE_COLS.replace('t.id,', 't.id AS tid,')}
@@ -135,13 +136,13 @@ class Api:
         playing = []
         for np in now_playing:
             w = self.db.one(_WATCH_SQL + " WHERE w.id = ?", (np["watch_id"],))
-            if w:
+            if w and not w["hidden"]:
                 playing.append({**watch_dict(w), "paused": np["paused"], "exact": np["exact"]})
 
         cont = []
         cutoff = now - RECENT_DAYS * 86400
         for t in self.db.query(f"SELECT {_TITLE_COLS}, MAX(w.last_seen_at) AS last FROM titles t "
-                               "JOIN watches w ON w.title_id = t.id WHERE w.last_seen_at > ? "
+                               "JOIN watches w ON w.title_id = t.id WHERE w.last_seen_at > ? AND t.hidden = 0 "
                                "GROUP BY t.id ORDER BY last DESC", (cutoff,)):
             if t["kind"] == "show":
                 st = self._show_state(t["id"])
@@ -162,15 +163,19 @@ class Api:
 
         # "Mark as watched" clicks aren't viewing, so they stay out of the weekly view
         week = [watch_dict(w) for w in self.db.query(
-            _WATCH_SQL + " WHERE w.last_seen_at >= ? AND w.manual = 0 ORDER BY w.started_at DESC", (week_start,))]
+            _WATCH_SQL + " WHERE w.last_seen_at >= ? AND w.manual = 0 AND COALESCE(t.hidden, 0) = 0 "
+            "ORDER BY w.started_at DESC", (week_start,))]
         stats = self.db.one(
             "SELECT COALESCE(SUM(watched_seconds), 0) AS secs, "
             "COUNT(DISTINCT CASE WHEN w.episode IS NOT NULL AND w.completed THEN w.title_id || ':' || w.season || ':' || w.episode END) AS eps, "
             "COUNT(DISTINCT CASE WHEN t.kind = 'movie' AND w.completed THEN w.title_id END) AS movies "
-            "FROM watches w LEFT JOIN titles t ON t.id = w.title_id WHERE w.last_seen_at >= ? AND w.manual = 0",
+            "FROM watches w LEFT JOIN titles t ON t.id = w.title_id "
+            "WHERE w.last_seen_at >= ? AND w.manual = 0 AND COALESCE(t.hidden, 0) = 0",
             (week_start,))
-        total = self.db.one("SELECT COALESCE(SUM(watched_seconds), 0) AS secs, COUNT(*) AS n, "
-                            "COUNT(DISTINCT title_id) AS titles, MIN(started_at) AS first FROM watches")
+        total = self.db.one("SELECT COALESCE(SUM(w.watched_seconds), 0) AS secs, COUNT(*) AS n, "
+                            "COUNT(DISTINCT w.title_id) AS titles, MIN(w.started_at) AS first "
+                            "FROM watches w LEFT JOIN titles t ON t.id = w.title_id "
+                            "WHERE COALESCE(t.hidden, 0) = 0")
         return {
             "now_playing": playing, "continue": cont[:24], "week": week, "week_start": week_start,
             "stats": {"week_seconds": stats["secs"], "week_episodes": stats["eps"], "week_movies": stats["movies"],
@@ -189,7 +194,7 @@ class Api:
         """
         today = dt.date.today().isoformat()
         out = []
-        for t in self.db.query(f"SELECT {_TITLE_COLS} FROM titles t WHERE t.kind = 'show' "
+        for t in self.db.query(f"SELECT {_TITLE_COLS} FROM titles t WHERE t.kind = 'show' AND t.hidden = 0 "
                                "AND EXISTS (SELECT 1 FROM watches w WHERE w.title_id = t.id)"):
             eps = [e for e in self._episode_list(t["id"]) if e["season"] > 0]
             st = self._show_state(t["id"])
@@ -248,6 +253,10 @@ class Api:
             out.append({"title": title_dict(t), "last_watched": t["last"], "watched_episodes": t["done"],
                         "total_episodes": t["total"], "current": self._show_state(t["id"])})
         return out
+
+    def hidden_titles(self) -> list[dict]:
+        return [title_dict(t) for t in self.db.query(
+            f"SELECT {_TITLE_COLS} FROM titles t WHERE t.hidden = 1 ORDER BY t.kind, t.name COLLATE NOCASE")]
 
     def movies(self) -> list[dict]:
         out = []
@@ -322,7 +331,10 @@ class Api:
         if since:
             where.append("w.started_at >= ?")
             args.append(since)
-        sql = _WATCH_SQL + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY w.started_at DESC LIMIT ?"
+        sql = _WATCH_SQL + " WHERE COALESCE(t.hidden, 0) = 0"
+        if where:
+            sql += " AND " + " AND ".join(where)
+        sql += " ORDER BY w.started_at DESC LIMIT ?"
         args.append(max(1, min(limit, 500)))
         return [watch_dict(w) for w in self.db.query(sql, args)]
 
@@ -333,6 +345,9 @@ class Api:
 
     def set_completed(self, watch_id: int, completed: bool) -> None:
         self.db.execute("UPDATE watches SET completed = ? WHERE id = ?", (int(completed), watch_id))
+
+    def set_hidden(self, title_id: int, hidden: bool) -> None:
+        self.db.execute("UPDATE titles SET hidden = ? WHERE id = ?", (int(hidden), title_id))
 
     def mark_episode(self, title_id: int, season: int, episode: int, watched: bool) -> None:
         if watched:
@@ -370,7 +385,7 @@ class Api:
 
     def export(self) -> dict:
         titles = [dict(r) for r in self.db.query(
-            "SELECT id, kind, name, year, overview, runtime, source, source_id, imdb_id, status FROM titles")]
+            "SELECT id, kind, name, year, overview, runtime, source, source_id, imdb_id, status, hidden FROM titles")]
         watches = [dict(r) for r in self.db.query("SELECT * FROM watches ORDER BY started_at")]
         episodes = [dict(r) for r in self.db.query("SELECT * FROM episodes")]
         return {"version": 1, "exported_at": time.time(), "titles": titles, "watches": watches, "episodes": episodes}

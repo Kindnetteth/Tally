@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS titles (
     status        TEXT,                       -- show status from the database, e.g. 'Ended'
     matched       INTEGER NOT NULL DEFAULT 0,
     locked        INTEGER NOT NULL DEFAULT 0, -- user picked the match by hand
+    hidden        INTEGER NOT NULL DEFAULT 0, -- hidden from every screen, still logged
     lookup_at     REAL,
     created_at    REAL NOT NULL
 );
@@ -102,6 +103,14 @@ class Database:
         self.write_lock = threading.RLock()
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Bring databases made by older versions up to date."""
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(titles)")}
+        if "hidden" not in columns:
+            conn.execute("ALTER TABLE titles ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
 
     def connect(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)

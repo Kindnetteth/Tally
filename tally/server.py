@@ -131,6 +131,8 @@ def make_handler(app: App):
                     return self._json(app.api.shows())
                 if path == "/api/movies":
                     return self._json(app.api.movies())
+                if path == "/api/hidden":
+                    return self._json(app.api.hidden_titles())
                 if m := re.fullmatch(r"/api/titles/(\d+)", path):
                     data = app.api.title(int(m.group(1)))
                     return self._json(data) if data else self._error(404, "not found")
@@ -181,7 +183,8 @@ def make_handler(app: App):
             items = metadata.tmdb_recommendations(t["kind"], t["name"], t["year"], t["imdb_id"], t["source"],
                                                   t["source_id"], key)
             # Point at your own page for anything you've already watched
-            mine = {(normalize(r["name"]), r["kind"]): r["id"] for r in app.db.query("SELECT id, name, kind FROM titles")}
+            mine = {(normalize(r["name"]), r["kind"]): r["id"]
+                    for r in app.db.query("SELECT id, name, kind FROM titles WHERE hidden = 0")}
             for it in items:
                 it["title_id"] = mine.get((normalize(it["name"] or ""), it["kind"]))
             _similar_cache[title_id] = (time.time(), items)
@@ -246,6 +249,9 @@ def make_handler(app: App):
                     return self._json({"ok": True, "title_id": new_id})
                 if m := re.fullmatch(r"/api/titles/(\d+)/delete", path):
                     app.api.delete_title(int(m.group(1)))
+                    return self._json({"ok": True})
+                if m := re.fullmatch(r"/api/titles/(\d+)/hidden", path):
+                    app.api.set_hidden(int(m.group(1)), bool(body.get("hidden", True)))
                     return self._json({"ok": True})
                 if m := re.fullmatch(r"/api/titles/(\d+)/refresh", path):
                     title_id = int(m.group(1))

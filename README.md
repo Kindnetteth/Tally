@@ -70,6 +70,7 @@ To undo the player changes, run `python3 -m tally setup --undo`.
 - **Show page:** the full episode list, organized by season. Tick episodes to mark them watched, or use **⋯ → Mark all up to here** to catch up on episodes you watched elsewhere.
 - **Fix match:** if a file was matched to the wrong show or movie, open it and choose **Fix match**. Every logged file moves to the title you pick.
 - **History:** search across titles, episode names and file names. You can remove entries or mark them finished.
+- **Hide a title:** on any show or movie page, choose **⋯ → Hide from library**. It stays logged but disappears from Home, Shows, Movies, History and your stats. Find it again under **Shows → Hidden** (or **Movies → Show hidden**), or in **Settings → Hidden titles**.
 
 An episode or movie counts as **finished** once you reach 85% of it, or the last 4 minutes (the end credits) of anything longer than 10 minutes. You can change this in Settings. If you reopen the same file within an hour, Tally continues the same entry. Files open for less than 20 seconds aren't logged.
 
@@ -78,6 +79,7 @@ An episode or movie counts as **finished** once you reach 85% of it, or the last
 - **Appearance:** Automatic, Light, Dark, Midnight (true black) or Glow themes; six colour schemes (Orchid, Violet, Ocean, Mint, Sunset, Graphite); and the app icon shown in the Dock, which can match your colour or be picked separately.
 - **Logging:** pause logging (also in the menu bar), open at login, only log shows and movies (skips music, phone videos, recordings and your own edits), ignore quick peeks, when something counts as finished, and folders to never log.
 - **Display:** the day your week starts, and hiding the names of episodes you haven't watched yet.
+- **Hidden titles:** shows and movies you've hidden from every screen, with a button to show each one again.
 
 ## Commands
 

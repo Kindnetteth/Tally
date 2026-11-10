@@ -455,8 +455,14 @@ let showsFilter = "all";
 async function renderShows() {
   const shows = await api("/api/shows");
   if (!shows.length) return [h("h1", {}, "Shows"), h("div", { style: { marginTop: "16px" } }, empty("No shows yet", "Episodes you watch are grouped into shows here."))];
+  const hiddenCount = shows.filter((it) => it.title.hidden).length;
   const filters = [["all", "All"], ["watching", "In progress"], ["caught_up", "Caught up"]];
-  const matches = (it) => showsFilter === "all" || (showsFilter === "caught_up" ? it.current && it.current.state === "caught_up" : !(it.current && it.current.state === "caught_up"));
+  if (hiddenCount) filters.push(["hidden", `Hidden (${hiddenCount})`]);
+  const matches = (it) => {
+    if (showsFilter === "hidden") return it.title.hidden;
+    if (it.title.hidden) return false;
+    return showsFilter === "all" || (showsFilter === "caught_up" ? it.current && it.current.state === "caught_up" : !(it.current && it.current.state === "caught_up"));
+  };
   const grid = h("div", { class: "grid" });
   const seg = h("div", { class: "seg" });
   function draw() {
@@ -467,28 +473,35 @@ async function renderShows() {
       const done = it.watched_episodes;
       const badge = total ? h("span", { class: "badge" + (done >= total ? " done" : "") }, `${done}/${total}`) : null;
       return h("a", { class: "card", href: `#/title/${it.title.id}` },
-        poster(it.title, [badge, total ? bar(done / total, done >= total) : null]),
+        poster(it.title, [badge, total ? bar(done / total, done >= total) : null, it.title.hidden ? h("span", { class: "badge" }, "Hidden") : null]),
         h("div", { class: "card-title" }, it.title.name),
         h("div", { class: cls }, sub),
         h("div", { class: "card-sub faint" }, relative(it.last_watched)));
     }));
+    if (!grid.childNodes.length) grid.append(empty("Nothing here", ""));
   }
   draw();
   return [h("div", { class: "section-head" }, h("h1", {}, "Shows"), seg), grid];
 }
 
+let showHiddenMovies = false;
 async function renderMovies() {
   const movies = await api("/api/movies");
   if (!movies.length) return [h("h1", {}, "Movies"), h("div", { style: { marginTop: "16px" } }, empty("No movies yet", "Movies you play show up here with their poster and year."))];
-  return [h("div", { class: "section-head" }, h("h1", {}, "Movies"), h("span", { class: "muted" }, `${movies.length} watched`)),
-    h("div", { class: "grid" }, movies.map((m) => {
+  const hidden = movies.filter((m) => m.title.hidden);
+  const visible = showHiddenMovies ? movies : movies.filter((m) => !m.title.hidden);
+  const toggleHidden = hidden.length ? h("button", { class: "link small", type: "button", style: { border: 0, background: "none", cursor: "pointer", padding: 0 },
+    onclick: () => { showHiddenMovies = !showHiddenMovies; route({ quiet: true }); } },
+    showHiddenMovies ? "Hide hidden movies" : `Show hidden (${hidden.length})`) : `${visible.length} watched`;
+  return [h("div", { class: "section-head" }, h("h1", {}, "Movies"), toggleHidden),
+    visible.length ? h("div", { class: "grid" }, visible.map((m) => {
       const done = m.times_finished > 0;
       return h("a", { class: "card", href: `#/title/${m.title.id}` },
         poster(m.title, [done ? h("span", { class: "badge done" }, m.times_finished > 1 ? `Watched ${m.times_finished}×` : "Watched") : null,
-          !done && m.progress != null ? bar(m.progress) : null]),
+          !done && m.progress != null ? bar(m.progress) : null, m.title.hidden ? h("span", { class: "badge" }, "Hidden") : null]),
         h("div", { class: "card-title" }, m.title.name),
         h("div", { class: "card-sub" }, [m.title.year, relative(m.last_watched)].filter(Boolean).join(" · ")));
-    }))];
+    })) : empty("No visible movies", "Everything here is hidden. Use Show hidden to bring it back.")];
 }
 
 let openSeason = {};
@@ -502,6 +515,7 @@ async function renderTitle(id) {
     t.runtime ? h("span", {}, `${t.runtime} min`) : null,
     t.status ? h("span", {}, t.status) : null,
     !t.matched ? h("span", { class: "pill accent" }, "Not matched yet") : null,
+    t.hidden ? h("span", { class: "pill" }, "Hidden") : null,
   ];
   const links = [];
   if (t.source === "tvmaze") links.push(h("a", { class: "link small", href: `https://www.tvmaze.com/shows/${t.source_id}`, target: "_blank", rel: "noopener" }, "TVmaze"));
@@ -514,7 +528,11 @@ async function renderTitle(id) {
       e.target.disabled = true;
       try { await api(`/api/titles/${t.id}/refresh`, {}); toast("Updated"); reload(); } catch (err) { toast(err.message); e.target.disabled = false; }
     } }, "Refresh info"),
-    menuButton([{ label: "Delete this title and its history", danger: true, run: async () => {
+    menuButton([{ label: t.hidden ? "Show in library" : "Hide from library", run: async () => {
+      await api(`/api/titles/${t.id}/hidden`, { hidden: !t.hidden });
+      toast(t.hidden ? "Showing in library" : "Hidden from library");
+      reload();
+    } }, { label: "Delete this title and its history", danger: true, run: async () => {
       if (!confirm(`Delete ${t.name} and all ${data.history.length} history entries?`)) return;
       await api(`/api/titles/${t.id}/delete`, {}); location.hash = t.kind === "show" ? "#/shows" : "#/movies";
     } }]));
@@ -767,8 +785,23 @@ function displayPanel() {
       toggle(PREFS.hide_spoilers, (v) => savePrefs({ hide_spoilers: v }), "Hide spoilers")));
 }
 
+function hiddenPanel(titles) {
+  if (!titles.length) return null;
+  return h("div", { class: "panel" }, h("h2", {}, "Hidden titles"),
+    h("p", { class: "muted small" }, "Hidden titles stay logged but don't appear on your home page, shows, movies, history or stats. Show one to put it back."),
+    h("div", { style: { marginTop: "10px" } }, titles.map((t) => h("div", { class: "source" },
+      h("div", { class: "row-main" },
+        h("div", { class: "row-title" }, t.name),
+        h("div", { class: "row-sub" }, t.kind === "show" ? "TV show" : "Movie")),
+      h("button", { class: "btn", type: "button", onclick: async (e) => {
+        e.target.disabled = true;
+        try { await api(`/api/titles/${t.id}/hidden`, { hidden: false }); toast(`${t.name} is back`); route({ quiet: true }); }
+        catch (err) { toast(err.message); e.target.disabled = false; }
+      } }, "Show")))));
+}
+
 async function renderSettings() {
-  const [st] = await Promise.all([api("/api/status"), loadPrefs()]);
+  const [st, , hidden] = await Promise.all([api("/api/status"), loadPrefs(), api("/api/hidden").catch(() => [])]);
   const keyInput = h("input", { class: "input", type: "password", placeholder: st.tmdb_key_set ? "Key saved — paste a new one to replace" : "Paste a TMDB API key (optional)", autocomplete: "off", "aria-label": "TMDB API key" });
   const save = h("button", { class: "btn primary", type: "button", onclick: async () => {
     save.disabled = true;
@@ -792,6 +825,7 @@ async function renderSettings() {
     appearancePanel(st),
     loggingPanel(st),
     displayPanel(),
+    hiddenPanel(hidden),
     h("div", { class: "panel" }, h("h2", {}, "Players"),
       h("p", { class: "muted small" }, "Tally checks these every few seconds. Green means it's talking to the player right now."),
       h("div", { style: { marginTop: "10px" } }, st.sources.map((s) => h("div", { class: "source" },
@@ -843,13 +877,16 @@ async function route(opts = {}) {
   document.querySelectorAll(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
   const mine = ++routeSeq;
   const el = view();
-  if (!opts.quiet) el.replaceChildren(h("div", { class: "skeleton" }));
+  // Re-rendering the same page (a checkbox, a menu action) keeps the old content
+  // and scroll position instead of flashing a skeleton and jumping to the top.
+  const samePage = !!currentRender && currentRender.hash === hash;
+  const y = window.scrollY;
+  if (!opts.quiet && !samePage) el.replaceChildren(h("div", { class: "skeleton" }));
   try {
     const parts = await render(...args);
     if (mine !== routeSeq) return;
-    const y = window.scrollY;
     el.replaceChildren(...[parts].flat());
-    if (opts.quiet) window.scrollTo(0, y);
+    if (opts.quiet || samePage) window.scrollTo(0, y);
     currentRender = { hash, live };
   } catch (err) {
     if (mine !== routeSeq) return;
